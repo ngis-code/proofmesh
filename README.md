@@ -309,3 +309,24 @@ Some obvious next steps beyond this v1:
 This v1 is intentionally simple and heavily commented so that it can serve as a foundation for those future improvements.
 
 
+
+cd /Users/LByron@rccl.com/dev/new-proofmest
+
+# Stop and remove old container (optional but recommended)
+docker rm -f proofmesh-validator-external 2>/dev/null || true
+
+# Rebuild the image
+docker build -t proofmesh-validator -f apps/validator/Dockerfile .
+
+# Run it again with region
+docker run -d --name proofmesh-validator-external \
+  -e VALIDATOR_ID=validator_local_landon \
+  -e VALIDATOR_SECRET=landon-local-secret \
+  -e VALIDATOR_REGION=us-east \
+  -e MQTT_URL=mqtt://146.190.65.80:1883 \
+  -e API_BASE_URL=http://146.190.65.80:3000 \
+  -e SQLITE_PATH=/data/validator.db \
+  -v "$(pwd)/validator-external-data:/data" \
+  proofmesh-validator
+
+
