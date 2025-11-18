@@ -44,6 +44,19 @@ const loadApiConfig = () => ({
     },
     mqttUrl: (0, exports.getEnv)('MQTT_URL', 'mqtt://localhost:1883'),
     verifyTimeoutMs: (0, exports.getNumberEnv)('VERIFY_TIMEOUT_MS', 1000),
+    // How many validators we try to involve in a stamp/verify cohort.
+    // For production you might raise this (and run more validators);
+    // for local dev the default of 3 keeps things simple.
+    stampValidatorSampleSize: (0, exports.getNumberEnv)('STAMP_VALIDATOR_SAMPLE_SIZE', 3),
+    // Minimum number of online validators required to accept a new stamp.
+    // If fewer are online, /api/stamp will fail with 503 so you don't
+    // accidentally create "unattested" proofs.
+    stampMinOnlineValidators: (0, exports.getNumberEnv)('STAMP_MIN_ONLINE_VALIDATORS', 1),
+    // Quorum for marking a proof as confirmed, expressed as a fraction.
+    // Default is 2/3 meaning "at least two thirds of responding validators
+    // for this proof must report valid".
+    stampQuorumNumerator: (0, exports.getNumberEnv)('STAMP_QUORUM_NUMERATOR', 2),
+    stampQuorumDenominator: (0, exports.getNumberEnv)('STAMP_QUORUM_DENOMINATOR', 3),
 });
 exports.loadApiConfig = loadApiConfig;
 exports.logger = {

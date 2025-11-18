@@ -5,6 +5,7 @@ import {
   findLatestProofByOrgAndArtifact,
   findProofsByOrgAndHash,
   getEnabledValidators,
+  getOnlineEnabledValidators,
   getProofById,
   getValidatorRunsForProof,
   insertProof,
@@ -63,7 +64,25 @@ fastify.post('/api/stamp', async (request, reply) => {
     versionOf,
   });
 
-  const validators = await getEnabledValidators(3);
+  // Choose a cohort of online, enabled validators to attest this stamp.
+  // We:
+  // - require a minimum number of online validators (configurable) so we
+  //   don't accidentally create unattested proofs, and
+  // - sample up to stampValidatorSampleSize from the online pool, using
+  //   random ordering in the DB helper so the cohort rotates naturally.
+  const onlineValidators = await getOnlineEnabledValidators(null);
+  const minOnline = config.stampMinOnlineValidators;
+
+  if (onlineValidators.length < minOnline) {
+    return reply.status(503).send({
+      error: 'not_enough_online_validators',
+      online: onlineValidators.length,
+      required: minOnline,
+    });
+  }
+
+  const sampleSize = Math.min(config.stampValidatorSampleSize, onlineValidators.length);
+  const validators = onlineValidators.slice(0, sampleSize);
   const validatorIds = validators.map((v) => v.id);
 
   if (validatorIds.length > 0) {
@@ -131,7 +150,7 @@ fastify.post('/api/verify', async (request, reply) => {
   }
 
   // db_plus_validators
-  const validators = await getEnabledValidators(3);
+  const validators = await getOnlineEnabledValidators(config.stampValidatorSampleSize);
   const validatorIds = validators.map((v) => v.id);
 
   if (validatorIds.length === 0) {

@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.pool = void 0;
 exports.runMigrations = runMigrations;
 exports.getEnabledValidators = getEnabledValidators;
+exports.getOnlineEnabledValidators = getOnlineEnabledValidators;
 exports.getValidatorById = getValidatorById;
 exports.upsertValidator = upsertValidator;
 exports.updateValidatorPresence = updateValidatorPresence;
@@ -58,6 +59,15 @@ async function runMigrations() {
 }
 async function getEnabledValidators(limit = null) {
     const sql = 'SELECT * FROM validators WHERE enabled = true ORDER BY created_at ASC' + (limit ? ' LIMIT $1' : '');
+    const params = limit ? [limit] : [];
+    const res = await exports.pool.query(sql, params);
+    return res.rows;
+}
+async function getOnlineEnabledValidators(limit = null) {
+    // Randomize order so that when we sample, we get a different cohort
+    // over time rather than always the same first N validators.
+    const baseSql = 'SELECT * FROM validators WHERE enabled = true AND online = true ORDER BY random()';
+    const sql = baseSql + (limit ? ' LIMIT $1' : '');
     const params = limit ? [limit] : [];
     const res = await exports.pool.query(sql, params);
     return res.rows;
@@ -133,12 +143,17 @@ async function recomputeProofStatus(proofId) {
     const hasInvalid = runs.some((r) => r.result === 'invalid');
     const validCount = runs.filter((r) => r.result === 'valid').length;
     const total = runs.length;
+    // Quorum threshold is configurable so that production can demand a
+    // stronger consensus (e.g. 3-of-4) while local dev can stay simple.
+    const quorumFraction = config.stampQuorumDenominator === 0
+        ? 1
+        : config.stampQuorumNumerator / config.stampQuorumDenominator;
     if (hasInvalid) {
         // Any validator explicitly saying "invalid" is a hard failure.
         status = 'failed';
     }
     else {
-        if (total >= 1 && validCount / total >= 2 / 3) {
+        if (total >= 1 && validCount / total >= quorumFraction) {
             // Quorum of validators say "valid" → confirmed.
             status = 'confirmed';
         }

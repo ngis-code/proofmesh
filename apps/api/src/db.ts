@@ -60,6 +60,17 @@ export async function getEnabledValidators(limit: number | null = null): Promise
   return res.rows;
 }
 
+export async function getOnlineEnabledValidators(limit: number | null = null): Promise<Validator[]> {
+  // Randomize order so that when we sample, we get a different cohort
+  // over time rather than always the same first N validators.
+  const baseSql =
+    'SELECT * FROM validators WHERE enabled = true AND online = true ORDER BY random()';
+  const sql = baseSql + (limit ? ' LIMIT $1' : '');
+  const params = limit ? [limit] : [];
+  const res = await pool.query<Validator>(sql, params);
+  return res.rows;
+}
+
 export async function getValidatorById(id: string): Promise<Validator | null> {
   const res = await pool.query<Validator>('SELECT * FROM validators WHERE id = $1', [id]);
   return res.rows[0] ?? null;
@@ -188,11 +199,18 @@ export async function recomputeProofStatus(proofId: string): Promise<Proof> {
   const validCount = runs.filter((r) => r.result === 'valid').length;
   const total = runs.length;
 
+  // Quorum threshold is configurable so that production can demand a
+  // stronger consensus (e.g. 3-of-4) while local dev can stay simple.
+  const quorumFraction =
+    config.stampQuorumDenominator === 0
+      ? 1
+      : config.stampQuorumNumerator / config.stampQuorumDenominator;
+
   if (hasInvalid) {
     // Any validator explicitly saying "invalid" is a hard failure.
     status = 'failed';
   } else {
-    if (total >= 1 && validCount / total >= 2 / 3) {
+    if (total >= 1 && validCount / total >= quorumFraction) {
       // Quorum of validators say "valid" → confirmed.
       status = 'confirmed';
     } else if (total >= 1 && validCount === 0) {

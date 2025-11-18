@@ -1,0 +1,155 @@
+version: "3.9"
+
+# Production-oriented compose file.
+# - Starts a small CockroachDB *cluster* and an MQTT broker for you, so you
+#   don't have to bootstrap them manually.
+# - Also allows overriding DB / MQTT hosts via env vars if you later point
+#   this stack at managed multi-region clusters instead of the local ones.
+# - This gives you a "batteries-included" prod-style environment from a single
+#   `docker compose` command.
+
+services:
+  # CockroachDB node for THIS region.
+  #
+  # In a real multi-region setup you will:
+  # - Run THIS compose file in us-east / us-central / us-west.
+  # - Give each region its own hostname / address (via COCKROACH_ADVERTISE_ADDR).
+  # - Set COCKROACH_JOIN so each node knows about the others.
+  #
+  # Example (east):
+  #   COCKROACH_ADVERTISE_ADDR=cockroach-east:26257
+  #   COCKROACH_JOIN=cockroach-east:26257,cockroach-central:26257,cockroach-west:26257
+  #
+  # When you do the same in the other regions with their own advertise addrs,
+  # Cockroach will form ONE GLOBAL CLUSTER across those three nodes.
+  #
+  # If you don't set COCKROACH_JOIN, this will behave as a single-node cluster
+  # (good enough for local / single-region prod).
+  cockroach:
+    image: cockroachdb/cockroach:v24.1.0
+    hostname: cockroach
+    environment:
+      - COCKROACH_ADVERTISE_ADDR=${COCKROACH_ADVERTISE_ADDR:-cockroach:26257}
+      - COCKROACH_JOIN=${COCKROACH_JOIN:-cockroach:26257}
+    command: >
+      start
+      --insecure
+      --listen-addr=${COCKROACH_ADVERTISE_ADDR:-cockroach:26257}
+      --http-addr=cockroach:8080
+      --join=${COCKROACH_JOIN:-cockroach:26257}
+    ports:
+      - "26257:26257"
+      - "8080:8080"
+    volumes:
+      - cockroach-data:/cockroach/cockroach-data
+    healthcheck:
+      test: ["CMD", "cockroach", "node", "status", "--insecure", "--host=cockroach:26257"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MQTT broker for THIS region.
+  #
+  # In dev / single-region, this is just a single Mosquitto instance.
+  # In real multi-region, you run this same service in each region
+  # (so you get one broker per region) and configure mosquitto.conf
+  # with bridge/cluster "connection" blocks that point to the other
+  # regions' brokers so they share proofmesh/# topics.
+  mqtt:
+    image: eclipse-mosquitto:2.0
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    depends_on:
+      cockroach:
+        condition: service_healthy
+      mqtt:
+        condition: service_started
+    env_file:
+      - ../.env
+    environment:
+      # By default, point to the local Cockroach node started above.
+      # In multi-region, you will set DB_HOST to the region's Cockroach
+      # advertise address (e.g. cockroach-east) and use COCKROACH_JOIN to
+      # make all nodes form a single logical cluster.
+      - DB_HOST=${DB_HOST:-cockroach}
+      - DB_PORT=${DB_PORT:-26257}
+      - DB_USER=${DB_USER:-root}
+      - DB_PASSWORD=${DB_PASSWORD:-}
+      - DB_NAME=${DB_NAME:-defaultdb}
+      # By default, point to the local Mosquitto broker started above.
+      # In multi-region, each region's compose runs ONE mqtt service
+      # (one broker per region). Broker-to-broker clustering/bridging
+      # is configured in mosquitto.conf using static connection blocks.
+      - MQTT_URL=${MQTT_URL:-mqtt://mqtt:1883}
+      - API_PORT=${API_PORT:-3000}
+      - API_LOG_LEVEL=${API_LOG_LEVEL:-info}
+      # Optional tuning knobs (use defaults if not set)
+      - VERIFY_TIMEOUT_MS=${VERIFY_TIMEOUT_MS:-1000}
+      - STAMP_VALIDATOR_SAMPLE_SIZE=${STAMP_VALIDATOR_SAMPLE_SIZE:-3}
+      - STAMP_MIN_ONLINE_VALIDATORS=${STAMP_MIN_ONLINE_VALIDATORS:-1}
+      - STAMP_QUORUM_NUMERATOR=${STAMP_QUORUM_NUMERATOR:-2}
+      - STAMP_QUORUM_DENOMINATOR=${STAMP_QUORUM_DENOMINATOR:-3}
+    ports:
+      # In each region, you can expose API locally (e.g. behind Cloudflare LB).
+      - "${API_PORT:-3000}:3000"
+
+  # Example regional validator.
+  #
+  # For production you'll typically:
+  # - Give each region its own validator (unique VALIDATOR_ID / SECRET).
+  # - Provision those IDs/secrets into the shared validators table via n8n.
+  # - Optionally run additional validators for customers; they can use the
+  #   same image and connect from outside this compose.
+  validator1:
+    build:
+      context: ..
+      dockerfile: apps/validator/Dockerfile
+    env_file:
+      - ../.env
+    environment:
+      # Validator identity and secret are provisioned in the Cockroach validators table.
+      - VALIDATOR_ID=${VALIDATOR_ID}
+      - VALIDATOR_SECRET=${VALIDATOR_SECRET}
+      # Point to the regional MQTT broker (part of the global MQTT cluster).
+      - MQTT_URL=${MQTT_URL}
+      # This can be the regional API URL or the global Cloudflare URL.
+      - API_BASE_URL=${API_BASE_URL:-http://api:3000}
+      - SQLITE_PATH=/data/validator.db
+    volumes:
+      - validator1-data:/data
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+    env_file:
+      - ../.env
+    environment:
+      # In production this should be the Cloudflare / API LB URL.
+      - VITE_API_BASE_URL=${VITE_API_BASE_URL:-http://api:3000}
+    ports:
+      - "5173:5173"
+
+  n8n:
+    image: n8nio/n8n:latest
+    env_file:
+      - ../.env
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=${N8N_BASIC_AUTH_ACTIVE:-false}
+      - N8N_HOST=${N8N_HOST:-localhost}
+      - N8N_PORT=${N8N_PORT:-5678}
+    ports:
+      - "5678:5678"
+
+volumes:
+  cockroach-data:
+  validator1-data:
+
+
