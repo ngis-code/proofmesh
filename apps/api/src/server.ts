@@ -123,30 +123,10 @@ fastify.post('/api/stamp', async (request, reply) => {
     },
   });
 
-  const artifactType = body.artifactType ?? 'file';
-
-  let versionOf: string | null = null;
-  if (body.artifactId) {
-    const latest = await findLatestProofByOrgAndArtifact(body.orgId, body.artifactId);
-    if (latest) {
-      versionOf = latest.id;
-    }
-  }
-
-  const proof = await insertProof({
-    orgId: body.orgId,
-    hash: body.hash,
-    artifactType,
-    artifactId: body.artifactId ?? null,
-    versionOf,
-  });
-
-  // Choose a cohort of online, enabled validators to attest this stamp.
-  // We:
-  // - require a minimum number of online validators (configurable) so we
-  //   don't accidentally create unattested proofs, and
-  // - sample up to stampValidatorSampleSize from the online pool, using
-  //   random ordering in the DB helper so the cohort rotates naturally.
+  // First, see if this region has enough local validators online. If not,
+  // try HTTP fallback to peer regions *before* creating any proof rows so
+  // we don't end up with duplicate proofs (one per region) for a single
+  // logical stamp request.
   const onlineValidators = await getOnlineEnabledValidators(null);
   const minOnline = config.stampMinOnlineValidators;
 
@@ -189,6 +169,24 @@ fastify.post('/api/stamp', async (request, reply) => {
       required: minOnline,
     });
   }
+
+  const artifactType = body.artifactType ?? 'file';
+
+  let versionOf: string | null = null;
+  if (body.artifactId) {
+    const latest = await findLatestProofByOrgAndArtifact(body.orgId, body.artifactId);
+    if (latest) {
+      versionOf = latest.id;
+    }
+  }
+
+  const proof = await insertProof({
+    orgId: body.orgId,
+    hash: body.hash,
+    artifactType,
+    artifactId: body.artifactId ?? null,
+    versionOf,
+  });
 
   const sampleSize = Math.min(config.stampValidatorSampleSize, onlineValidators.length);
   const validators = onlineValidators.slice(0, sampleSize);
