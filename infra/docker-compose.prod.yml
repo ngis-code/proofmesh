@@ -127,6 +127,7 @@ services:
       # This can be the regional API URL or the global Cloudflare URL.
       - API_BASE_URL=${API_BASE_URL:-http://api:3000}
       - SQLITE_PATH=/data/validator.db
+      - VALIDATOR_REGION=us-east
     volumes:
       - validator1-data:/data
 
