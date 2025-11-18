@@ -29,13 +29,18 @@ services:
     image: cockroachdb/cockroach:v24.1.0
     hostname: cockroach
     environment:
+      # COCKROACH_ADVERTISE_ADDR is what OTHER NODES use to reach this node.
+      # It can be a host IP:PORT when running a multi-host cluster, but the
+      # Cockroach process inside the container should always listen on the
+      # container-local address "cockroach:26257".
       - COCKROACH_ADVERTISE_ADDR=${COCKROACH_ADVERTISE_ADDR:-cockroach:26257}
       - COCKROACH_JOIN=${COCKROACH_JOIN:-cockroach:26257}
     command: >
       start
       --insecure
-      --listen-addr=${COCKROACH_ADVERTISE_ADDR:-cockroach:26257}
+      --listen-addr=cockroach:26257
       --http-addr=cockroach:8080
+      --advertise-addr=${COCKROACH_ADVERTISE_ADDR:-cockroach:26257}
       --join=${COCKROACH_JOIN:-cockroach:26257}
     ports:
       - "26257:26257"
