@@ -1,0 +1,28 @@
+node_modules
+.pnpm-store
+dist
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE/editor
+.DS_Store
+.vscode
+.idea
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Docker / runtime data
+infra/cockroach-data
+infra/validator1-data
+docker-compose.override.yml
+
+# Build artifacts
+apps/**/dist
+packages/**/dist
+
+
