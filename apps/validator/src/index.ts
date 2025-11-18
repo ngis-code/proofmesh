@@ -13,6 +13,12 @@ const VALIDATOR_ID = getEnv('VALIDATOR_ID');
 const VALIDATOR_SECRET = getEnv('VALIDATOR_SECRET', 'dev-secret');
 const MQTT_URL = getEnv('MQTT_URL', 'mqtt://localhost:1883');
 const API_BASE_URL = getEnv('API_BASE_URL', 'http://api:3000');
+// Logical region for this validator node (e.g. "us-east", "us-west").
+// This is persisted in the shared CockroachDB `validators` table via
+// the /api/validators/register endpoint so that:
+// - external validators can declare their region at runtime via env
+// - region changes survive restarts without manual SQL updates.
+const VALIDATOR_REGION = getEnv('VALIDATOR_REGION', 'dev');
 // NOTE: In this Docker dev build we keep validator storage in-memory for simplicity.
 // The schema is designed so it can be swapped to real SQLite later without changing behavior.
 const SQLITE_PATH = getEnv('SQLITE_PATH', './validator.db');
@@ -22,6 +28,7 @@ logger.info('Validator starting', {
   MQTT_URL,
   SQLITE_PATH,
   API_BASE_URL,
+  VALIDATOR_REGION,
 });
 
 // Simple in-memory hash store for dev; can be replaced with real SQLite-backed
@@ -47,7 +54,7 @@ async function registerWithApi(): Promise<void> {
         id: VALIDATOR_ID,
         secret: VALIDATOR_SECRET,
         name: VALIDATOR_ID,
-        region: 'dev',
+        region: VALIDATOR_REGION,
       }),
     });
 
