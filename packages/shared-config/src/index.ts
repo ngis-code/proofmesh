@@ -18,6 +18,7 @@ export interface ApiConfig {
   stampMinOnlineValidators: number;
   stampQuorumNumerator: number;
   stampQuorumDenominator: number;
+  stampFallbackApis: string[];
 }
 
 export const getEnv = (key: string, defaultValue?: string): string => {
@@ -71,6 +72,13 @@ export const loadApiConfig = (): ApiConfig => ({
   // for this proof must report valid".
   stampQuorumNumerator: getNumberEnv('STAMP_QUORUM_NUMERATOR', 2),
   stampQuorumDenominator: getNumberEnv('STAMP_QUORUM_DENOMINATOR', 3),
+  // Optional comma-separated list of fallback API base URLs to use for
+  // /api/stamp if the local region does not have enough online validators.
+  // Example: "http://api-west.internal:3000,http://api-central.internal:3000"
+  stampFallbackApis: (getEnv('STAMP_FALLBACK_APIS', '') || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0),
 });
 
 export const logger = {

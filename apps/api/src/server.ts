@@ -1,4 +1,6 @@
 import Fastify from 'fastify';
+import http from 'http';
+import https from 'https';
 import cors from '@fastify/cors';
 import { loadApiConfig, logger } from '@proofmesh/shared-config';
 import {
@@ -34,6 +36,66 @@ async function registerPlugins() {
 
 fastify.get('/api/health', async () => ({ status: 'ok' }));
 
+async function postJson(
+  url: string,
+  body: unknown,
+  timeoutMs: number,
+  extraHeaders: Record<string, string> = {},
+): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    try {
+      const u = new URL(url);
+      const data = JSON.stringify(body ?? {});
+      const isHttps = u.protocol === 'https:';
+      const lib = isHttps ? https : http;
+
+      const req = lib.request(
+        {
+          hostname: u.hostname,
+          port: u.port ? Number(u.port) : isHttps ? 443 : 80,
+          path: u.pathname + (u.search || ''),
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'content-length': Buffer.byteLength(data),
+            ...extraHeaders,
+          },
+          timeout: timeoutMs,
+        },
+        (res) => {
+          const chunks: string[] = [];
+          res.setEncoding('utf8');
+          res.on('data', (chunk) => chunks.push(chunk));
+          res.on('end', () => {
+            const raw = chunks.join('');
+            if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+              return reject(
+                new Error(`Fallback stamp failed with status ${res.statusCode ?? 'unknown'}: ${raw}`),
+              );
+            }
+            if (!raw) return resolve({});
+            try {
+              resolve(JSON.parse(raw));
+            } catch (err) {
+              reject(err);
+            }
+          });
+        },
+      );
+
+      req.on('error', (err) => reject(err));
+      req.on('timeout', () => {
+        req.destroy(new Error('Request timeout'));
+      });
+
+      req.write(data);
+      req.end();
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
 fastify.post('/api/stamp', async (request, reply) => {
   const body = request.body as {
     orgId: string;
@@ -45,6 +107,8 @@ fastify.post('/api/stamp', async (request, reply) => {
   if (!body?.orgId || !body?.hash) {
     return reply.status(400).send({ error: 'orgId and hash are required' });
   }
+
+  const isFallbackRequest = request.headers['x-proofmesh-stamp-fallback'] === '1';
 
   const artifactType = body.artifactType ?? 'file';
 
@@ -73,7 +137,29 @@ fastify.post('/api/stamp', async (request, reply) => {
   const onlineValidators = await getOnlineEnabledValidators(null);
   const minOnline = config.stampMinOnlineValidators;
 
-  if (onlineValidators.length < minOnline) {
+  if (!isFallbackRequest && onlineValidators.length < minOnline) {
+    // Try stamping via fallback API regions (if configured) before failing.
+    if (config.stampFallbackApis.length > 0) {
+      for (const baseUrl of config.stampFallbackApis) {
+        const trimmed = baseUrl.replace(/\/+$/, '');
+        const target = `${trimmed}/api/stamp`;
+        try {
+          logger.info('Attempting stamp fallback', { target });
+          const result = await postJson(
+            target,
+            body,
+            config.verifyTimeoutMs,
+            { 'x-proofmesh-stamp-fallback': '1' },
+          );
+          logger.info('Stamp fallback succeeded', { target });
+          // Pass through the other region's response so the client sees a normal stamp result.
+          return result;
+        } catch (err) {
+          logger.error('Stamp fallback failed', { target, err });
+        }
+      }
+    }
+
     return reply.status(503).send({
       error: 'not_enough_online_validators',
       online: onlineValidators.length,
