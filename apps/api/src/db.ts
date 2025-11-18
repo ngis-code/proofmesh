@@ -63,10 +63,33 @@ export async function getEnabledValidators(limit: number | null = null): Promise
 export async function getOnlineEnabledValidators(limit: number | null = null): Promise<Validator[]> {
   // Randomize order so that when we sample, we get a different cohort
   // over time rather than always the same first N validators.
-  const baseSql =
-    'SELECT * FROM validators WHERE enabled = true AND online = true ORDER BY random()';
-  const sql = baseSql + (limit ? ' LIMIT $1' : '');
-  const params = limit ? [limit] : [];
+  //
+  // IMPORTANT: scope "online" validators to this API's region so that:
+  // - each region only sends MQTT commands to validators connected to
+  //   its own broker, and
+  // - cross-region work happens via HTTP /api/stamp fallback rather than
+  //   trying to talk to remote-region validators over MQTT directly.
+  //
+  // This relies on validators having a region string that matches the
+  // API_REGION env for the region they are physically running in.
+  const params: unknown[] = [];
+  let paramIndex = 1;
+
+  let sql =
+    'SELECT * FROM validators WHERE enabled = true AND online = true';
+
+  if (config.region) {
+    sql += ` AND region = $${paramIndex++}`;
+    params.push(config.region);
+  }
+
+  sql += ' ORDER BY random()';
+
+  if (limit) {
+    sql += ` LIMIT $${paramIndex++}`;
+    params.push(limit);
+  }
+
   const res = await pool.query<Validator>(sql, params);
   return res.rows;
 }

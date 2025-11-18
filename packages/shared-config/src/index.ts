@@ -5,6 +5,7 @@ dotenv.config();
 export interface ApiConfig {
   port: number;
   logLevel: string;
+  region: string;
   db: {
     host: string;
     port: number;
@@ -47,6 +48,10 @@ export const getNumberEnv = (key: string, defaultValue?: number): number => {
 export const loadApiConfig = (): ApiConfig => ({
   port: getNumberEnv('API_PORT', 3000),
   logLevel: getEnv('API_LOG_LEVEL', 'debug'),
+  // Logical region name for this API instance (e.g. "us-east", "us-west").
+  // Used to scope "local" validators so that MQTT commands are only sent
+  // within the same region, and cross-region work happens via HTTP fallback.
+  region: getEnv('API_REGION', 'dev'),
   db: {
     host: getEnv('DB_HOST', 'localhost'),
     port: getNumberEnv('DB_PORT', 26257),

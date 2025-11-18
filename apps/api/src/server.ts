@@ -110,6 +110,19 @@ fastify.post('/api/stamp', async (request, reply) => {
 
   const isFallbackRequest = request.headers['x-proofmesh-stamp-fallback'] === '1';
 
+  logger.info('Stamp request received', {
+    bodyMeta: {
+      orgId: body.orgId,
+      hasArtifactId: !!body.artifactId,
+    },
+    isFallbackRequest,
+    stampConfig: {
+      stampMinOnlineValidators: config.stampMinOnlineValidators,
+      stampValidatorSampleSize: config.stampValidatorSampleSize,
+      stampFallbackApis: config.stampFallbackApis,
+    },
+  });
+
   const artifactType = body.artifactType ?? 'file';
 
   let versionOf: string | null = null;
@@ -137,9 +150,19 @@ fastify.post('/api/stamp', async (request, reply) => {
   const onlineValidators = await getOnlineEnabledValidators(null);
   const minOnline = config.stampMinOnlineValidators;
 
-  if (!isFallbackRequest && onlineValidators.length < minOnline) {
-    // Try stamping via fallback API regions (if configured) before failing.
-    if (config.stampFallbackApis.length > 0) {
+  logger.info('Stamp validator selection', {
+    isFallbackRequest,
+    onlineValidatorsCount: onlineValidators.length,
+    minOnline,
+  });
+
+  if (onlineValidators.length < minOnline) {
+    // If this is the initial request in this region, try HTTP fallback
+    // to peer API regions before failing. If this is *already* a
+    // fallback request (x-proofmesh-stamp-fallback=1), we skip further
+    // fallbacks but still enforce the minOnline requirement so we don't
+    // create unattested proofs with zero validators.
+    if (!isFallbackRequest && config.stampFallbackApis.length > 0) {
       for (const baseUrl of config.stampFallbackApis) {
         const trimmed = baseUrl.replace(/\/+$/, '');
         const target = `${trimmed}/api/stamp`;
