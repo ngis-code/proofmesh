@@ -1,0 +1,31 @@
+{
+  "name": "proofmesh",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ProofMesh v1 - multi-region-ready digital integrity network (single-region dev stack).",
+  "scripts": {
+    "dev:api": "pnpm --filter @proofmesh/api dev",
+    "dev:validator": "pnpm --filter @proofmesh/validator dev",
+    "dev:web": "pnpm --filter @proofmesh/web dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "fastify": "^5.0.0",
+    "@fastify/cors": "^10.0.0",
+    "mqtt": "^5.5.0",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.6.0",
+    "@typescript-eslint/parser": "^8.6.0",
+    "eslint": "^9.0.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  }
+}

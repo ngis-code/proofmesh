@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "@proofmesh/shared-types/*": ["packages/shared-types/src/*"],
+      "@proofmesh/shared-config/*": ["packages/shared-config/src/*"]
+    }
+  }
+}
+
+

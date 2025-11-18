@@ -1,0 +1,29 @@
+{
+  "name": "@proofmesh/api",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/server.js",
+  "types": "dist/server.d.ts",
+  "scripts": {
+    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "lint": "eslint \"src/**/*.{ts,tsx}\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.1.0",
+    "@proofmesh/shared-config": "workspace:*",
+    "@proofmesh/shared-types": "workspace:*",
+    "dotenv": "^16.4.5",
+    "fastify": "^5.0.0",
+    "mqtt": "^5.5.0",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@types/mqtt": "^2.5.0",
+    "@types/node": "^22.7.0",
+    "@types/pg": "^8.10.0",
+    "ts-node-dev": "^2.0.0"
+  }
+}
