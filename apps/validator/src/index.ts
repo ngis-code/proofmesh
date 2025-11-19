@@ -71,6 +71,10 @@ async function registerWithApi(): Promise<void> {
   }
 }
 
+// Track whether we've already started the periodic registration retry loop
+// so that we don't create multiple intervals on MQTT reconnects.
+let registrationRetryStarted = false;
+
 function signPayload(hash: string, timestamp: string): string {
   const hmac = crypto.createHmac('sha256', VALIDATOR_SECRET);
   hmac.update(`${hash}:${timestamp}:${VALIDATOR_ID}`);
@@ -96,10 +100,19 @@ const client = mqtt.connect(MQTT_URL, {
 
 client.on('connect', () => {
   logger.info('Validator MQTT connected', { MQTT_URL });
-  // Fire-and-forget registration; if the API is not yet available this
-  // will log an error but the validator will still operate against
-  // MQTT. On next container restart it will try again.
+  // Try to register immediately. If the API is not yet available this
+  // will log an error but the validator will still operate against MQTT.
   void registerWithApi();
+  // Also retry registration periodically so that if the API comes up
+  // after this validator (or is briefly unavailable), it will still
+  // self-register without requiring a container restart. The API-side
+  // upsert is idempotent, so repeated calls are safe.
+  if (!registrationRetryStarted) {
+    registrationRetryStarted = true;
+    setInterval(() => {
+      void registerWithApi();
+    }, 30000);
+  }
   // Publish online presence.
   client.publish(
     presenceTopic,
