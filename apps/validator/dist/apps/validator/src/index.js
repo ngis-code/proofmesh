@@ -10,6 +10,12 @@ const VALIDATOR_ID = (0, shared_config_1.getEnv)('VALIDATOR_ID');
 const VALIDATOR_SECRET = (0, shared_config_1.getEnv)('VALIDATOR_SECRET', 'dev-secret');
 const MQTT_URL = (0, shared_config_1.getEnv)('MQTT_URL', 'mqtt://localhost:1883');
 const API_BASE_URL = (0, shared_config_1.getEnv)('API_BASE_URL', 'http://api:3000');
+// Logical region for this validator node (e.g. "us-east", "us-west").
+// This is persisted in the shared CockroachDB `validators` table via
+// the /api/validators/register endpoint so that:
+// - external validators can declare their region at runtime via env
+// - region changes survive restarts without manual SQL updates.
+const VALIDATOR_REGION = (0, shared_config_1.getEnv)('VALIDATOR_REGION', 'dev');
 // NOTE: In this Docker dev build we keep validator storage in-memory for simplicity.
 // The schema is designed so it can be swapped to real SQLite later without changing behavior.
 const SQLITE_PATH = (0, shared_config_1.getEnv)('SQLITE_PATH', './validator.db');
@@ -18,6 +24,7 @@ shared_config_1.logger.info('Validator starting', {
     MQTT_URL,
     SQLITE_PATH,
     API_BASE_URL,
+    VALIDATOR_REGION,
 });
 // Simple in-memory hash store for dev; can be replaced with real SQLite-backed
 // implementation that mirrors this interface.
@@ -39,7 +46,7 @@ async function registerWithApi() {
                 id: VALIDATOR_ID,
                 secret: VALIDATOR_SECRET,
                 name: VALIDATOR_ID,
-                region: 'dev',
+                region: VALIDATOR_REGION,
             }),
         });
         if (!res.ok) {
@@ -54,6 +61,9 @@ async function registerWithApi() {
         shared_config_1.logger.error('Validator registration with API failed', { err });
     }
 }
+// Track whether we've already started the periodic registration retry loop
+// so that we don't create multiple intervals on MQTT reconnects.
+let registrationRetryStarted = false;
 function signPayload(hash, timestamp) {
     const hmac = crypto_1.default.createHmac('sha256', VALIDATOR_SECRET);
     hmac.update(`${hash}:${timestamp}:${VALIDATOR_ID}`);
@@ -76,10 +86,19 @@ const client = mqtt_1.default.connect(MQTT_URL, {
 });
 client.on('connect', () => {
     shared_config_1.logger.info('Validator MQTT connected', { MQTT_URL });
-    // Fire-and-forget registration; if the API is not yet available this
-    // will log an error but the validator will still operate against
-    // MQTT. On next container restart it will try again.
+    // Try to register immediately. If the API is not yet available this
+    // will log an error but the validator will still operate against MQTT.
     void registerWithApi();
+    // Also retry registration periodically so that if the API comes up
+    // after this validator (or is briefly unavailable), it will still
+    // self-register without requiring a container restart. The API-side
+    // upsert is idempotent, so repeated calls are safe.
+    if (!registrationRetryStarted) {
+        registrationRetryStarted = true;
+        setInterval(() => {
+            void registerWithApi();
+        }, 30000);
+    }
     // Publish online presence.
     client.publish(presenceTopic, JSON.stringify({
         validatorId: VALIDATOR_ID,

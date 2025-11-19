@@ -13,6 +13,19 @@ import { join } from 'path';
 
 const config = loadApiConfig();
 
+// Aggregated per-validator statistics for reputation / rewards / governance.
+// This is kept up to date incrementally as new validator_runs are written so
+// that public APIs like /api/validator-stats never need to scan the full
+// validator_runs table.
+export interface ValidatorStats {
+  validator_id: string;
+  total_runs: number;
+  total_valid: number;
+  total_invalid: number;
+  total_unknown: number;
+  last_seen_at: string | null;
+}
+
 export const pool = new Pool({
   host: config.db.host,
   port: config.db.port,
@@ -212,6 +225,38 @@ export async function insertValidatorRun(params: {
     [params.proofId, params.validatorId, params.result, params.signature, params.signedAt, params.latencyMs ?? null],
   );
   return res.rows[0];
+}
+
+export async function updateValidatorStatsForValidator(validatorId: string): Promise<void> {
+  await pool.query(
+    `UPSERT INTO validator_stats (
+       validator_id,
+       total_runs,
+       total_valid,
+       total_invalid,
+       total_unknown,
+       last_seen_at
+     )
+     SELECT
+       validator_id,
+       COUNT(*)                                       AS total_runs,
+       COUNT(*) FILTER (WHERE result = 'valid')   AS total_valid,
+       COUNT(*) FILTER (WHERE result = 'invalid') AS total_invalid,
+       COUNT(*) FILTER (WHERE result = 'unknown') AS total_unknown,
+       MAX(signed_at)                               AS last_seen_at
+     FROM validator_runs
+     WHERE validator_id = $1
+     GROUP BY validator_id`,
+    [validatorId],
+  );
+}
+
+export async function listValidatorStats(limit = 100): Promise<ValidatorStats[]> {
+  const res = await pool.query<ValidatorStats>(
+    'SELECT * FROM validator_stats ORDER BY total_runs DESC LIMIT $1',
+    [limit],
+  );
+  return res.rows;
 }
 
 export async function recomputeProofStatus(proofId: string): Promise<Proof> {

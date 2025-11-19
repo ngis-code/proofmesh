@@ -32,6 +32,10 @@ exports.getNumberEnv = getNumberEnv;
 const loadApiConfig = () => ({
     port: (0, exports.getNumberEnv)('API_PORT', 3000),
     logLevel: (0, exports.getEnv)('API_LOG_LEVEL', 'debug'),
+    // Logical region name for this API instance (e.g. "us-east", "us-west").
+    // Used to scope "local" validators so that MQTT commands are only sent
+    // within the same region, and cross-region work happens via HTTP fallback.
+    region: (0, exports.getEnv)('API_REGION', 'dev'),
     db: {
         host: (0, exports.getEnv)('DB_HOST', 'localhost'),
         port: (0, exports.getNumberEnv)('DB_PORT', 26257),
@@ -57,6 +61,13 @@ const loadApiConfig = () => ({
     // for this proof must report valid".
     stampQuorumNumerator: (0, exports.getNumberEnv)('STAMP_QUORUM_NUMERATOR', 2),
     stampQuorumDenominator: (0, exports.getNumberEnv)('STAMP_QUORUM_DENOMINATOR', 3),
+    // Optional comma-separated list of fallback API base URLs to use for
+    // /api/stamp if the local region does not have enough online validators.
+    // Example: "http://api-west.internal:3000,http://api-central.internal:3000"
+    stampFallbackApis: ((0, exports.getEnv)('STAMP_FALLBACK_APIS', '') || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0),
 });
 exports.loadApiConfig = loadApiConfig;
 exports.logger = {

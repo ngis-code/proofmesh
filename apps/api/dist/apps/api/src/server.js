@@ -4,6 +4,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const fastify_1 = __importDefault(require("fastify"));
+const http_1 = __importDefault(require("http"));
+const https_1 = __importDefault(require("https"));
 const cors_1 = __importDefault(require("@fastify/cors"));
 const shared_config_1 = require("@proofmesh/shared-config");
 const db_1 = require("./db");
@@ -19,10 +21,111 @@ async function registerPlugins() {
     });
 }
 fastify.get('/api/health', async () => ({ status: 'ok' }));
+async function postJson(url, body, timeoutMs, extraHeaders = {}) {
+    return new Promise((resolve, reject) => {
+        try {
+            const u = new URL(url);
+            const data = JSON.stringify(body ?? {});
+            const isHttps = u.protocol === 'https:';
+            const lib = isHttps ? https_1.default : http_1.default;
+            const req = lib.request({
+                hostname: u.hostname,
+                port: u.port ? Number(u.port) : isHttps ? 443 : 80,
+                path: u.pathname + (u.search || ''),
+                method: 'POST',
+                headers: {
+                    'content-type': 'application/json',
+                    'content-length': Buffer.byteLength(data),
+                    ...extraHeaders,
+                },
+                timeout: timeoutMs,
+            }, (res) => {
+                const chunks = [];
+                res.setEncoding('utf8');
+                res.on('data', (chunk) => chunks.push(chunk));
+                res.on('end', () => {
+                    const raw = chunks.join('');
+                    if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+                        return reject(new Error(`Fallback stamp failed with status ${res.statusCode ?? 'unknown'}: ${raw}`));
+                    }
+                    if (!raw)
+                        return resolve({});
+                    try {
+                        resolve(JSON.parse(raw));
+                    }
+                    catch (err) {
+                        reject(err);
+                    }
+                });
+            });
+            req.on('error', (err) => reject(err));
+            req.on('timeout', () => {
+                req.destroy(new Error('Request timeout'));
+            });
+            req.write(data);
+            req.end();
+        }
+        catch (err) {
+            reject(err);
+        }
+    });
+}
 fastify.post('/api/stamp', async (request, reply) => {
     const body = request.body;
     if (!body?.orgId || !body?.hash) {
         return reply.status(400).send({ error: 'orgId and hash are required' });
+    }
+    const isFallbackRequest = request.headers['x-proofmesh-stamp-fallback'] === '1';
+    shared_config_1.logger.info('Stamp request received', {
+        bodyMeta: {
+            orgId: body.orgId,
+            hasArtifactId: !!body.artifactId,
+        },
+        isFallbackRequest,
+        stampConfig: {
+            stampMinOnlineValidators: config.stampMinOnlineValidators,
+            stampValidatorSampleSize: config.stampValidatorSampleSize,
+            stampFallbackApis: config.stampFallbackApis,
+        },
+    });
+    // First, see if this region has enough local validators online. If not,
+    // try HTTP fallback to peer regions *before* creating any proof rows so
+    // we don't end up with duplicate proofs (one per region) for a single
+    // logical stamp request.
+    const onlineValidators = await (0, db_1.getOnlineEnabledValidators)(null);
+    const minOnline = config.stampMinOnlineValidators;
+    shared_config_1.logger.info('Stamp validator selection', {
+        isFallbackRequest,
+        onlineValidatorsCount: onlineValidators.length,
+        minOnline,
+    });
+    if (onlineValidators.length < minOnline) {
+        // If this is the initial request in this region, try HTTP fallback
+        // to peer API regions before failing. If this is *already* a
+        // fallback request (x-proofmesh-stamp-fallback=1), we skip further
+        // fallbacks but still enforce the minOnline requirement so we don't
+        // create unattested proofs with zero validators.
+        if (!isFallbackRequest && config.stampFallbackApis.length > 0) {
+            for (const baseUrl of config.stampFallbackApis) {
+                const trimmed = baseUrl.replace(/\/+$/, '');
+                const target = `${trimmed}/api/stamp`;
+                try {
+                    shared_config_1.logger.info('Attempting stamp fallback', { target });
+                    const result = await postJson(target, body, config.verifyTimeoutMs, { 'x-proofmesh-stamp-fallback': '1' });
+                    shared_config_1.logger.info('Stamp fallback succeeded', { target });
+                    // Pass through the other region's response so the client sees a normal stamp result.
+                    return result;
+                }
+                catch (err) {
+                    shared_config_1.logger.error('Stamp fallback failed', { target, err });
+                }
+            }
+        }
+        return reply.status(503).send({
+            error: 'not_enough_online_validators',
+            online: onlineValidators.length,
+            required: minOnline,
+        });
     }
     const artifactType = body.artifactType ?? 'file';
     let versionOf = null;
@@ -39,21 +142,6 @@ fastify.post('/api/stamp', async (request, reply) => {
         artifactId: body.artifactId ?? null,
         versionOf,
     });
-    // Choose a cohort of online, enabled validators to attest this stamp.
-    // We:
-    // - require a minimum number of online validators (configurable) so we
-    //   don't accidentally create unattested proofs, and
-    // - sample up to stampValidatorSampleSize from the online pool, using
-    //   random ordering in the DB helper so the cohort rotates naturally.
-    const onlineValidators = await (0, db_1.getOnlineEnabledValidators)(null);
-    const minOnline = config.stampMinOnlineValidators;
-    if (onlineValidators.length < minOnline) {
-        return reply.status(503).send({
-            error: 'not_enough_online_validators',
-            online: onlineValidators.length,
-            required: minOnline,
-        });
-    }
     const sampleSize = Math.min(config.stampValidatorSampleSize, onlineValidators.length);
     const validators = onlineValidators.slice(0, sampleSize);
     const validatorIds = validators.map((v) => v.id);
@@ -89,13 +177,35 @@ fastify.post('/api/verify', async (request, reply) => {
     // Fast path: DB says this hash is already confirmed for this org.
     // In that case, we can safely return immediately without waiting
     // for live validator responses. This keeps repeated verifications
-    // very fast even with many validators in the network.
+    // very fast even with many validators in the network, but we still
+    // surface *which* validators contributed to the confirmation.
     if (mode === 'db_plus_validators' && hasConfirmed) {
+        // Prefer the most recent confirmed proof when summarising validator runs.
+        const confirmedProof = proofs.find((p) => p.status === 'confirmed') ?? proofs[0];
+        let validatorsConfirmed = 0;
+        let validatorsTotal = 0;
+        let validatorsConfirmedIds = [];
+        if (confirmedProof) {
+            const runs = await (0, db_1.getValidatorRunsForProof)(confirmedProof.id);
+            // Collapse multiple runs per validator down to the latest one, then
+            // count how many ended in "valid".
+            const latestByValidator = new Map();
+            for (const run of runs) {
+                latestByValidator.set(run.validator_id, run);
+            }
+            const latestRuns = Array.from(latestByValidator.values());
+            validatorsTotal = latestRuns.length;
+            validatorsConfirmedIds = latestRuns
+                .filter((r) => r.result === 'valid')
+                .map((r) => r.validator_id);
+            validatorsConfirmed = validatorsConfirmedIds.length;
+        }
         return {
             mode,
             status,
-            validators_confirmed: 0,
-            validators_total: 0,
+            validators_confirmed: validatorsConfirmed,
+            validators_total: validatorsTotal,
+            validators_confirmed_ids: validatorsConfirmedIds,
             proofs,
         };
     }
@@ -222,6 +332,13 @@ fastify.get('/api/validator-runs', async (request) => {
     const safeLimit = Number.isNaN(parsedLimit) || parsedLimit <= 0 ? 100 : Math.min(parsedLimit, 1000);
     const runs = await (0, db_1.listValidatorRuns)(safeLimit);
     return { validatorRuns: runs };
+});
+fastify.get('/api/validator-stats', async (request) => {
+    const { limit } = request.query;
+    const parsedLimit = limit ? Number(limit) : 100;
+    const safeLimit = Number.isNaN(parsedLimit) || parsedLimit <= 0 ? 100 : Math.min(parsedLimit, 1000);
+    const stats = await (0, db_1.listValidatorStats)(safeLimit);
+    return { stats };
 });
 async function start() {
     try {

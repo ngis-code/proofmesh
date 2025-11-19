@@ -45,7 +45,7 @@ function getMqttClient() {
             if (topic.startsWith('proofmesh/validators/') && topic.endsWith('/results')) {
                 const payload = JSON.parse(raw);
                 shared_config_1.logger.debug('Received MQTT result', { topic, payload });
-                await (0, db_1.insertValidatorRun)({
+                const run = await (0, db_1.insertValidatorRun)({
                     proofId: payload.proofId,
                     validatorId: payload.validatorId,
                     result: payload.result,
@@ -53,6 +53,7 @@ function getMqttClient() {
                     signedAt: payload.timestamp,
                 });
                 await (0, db_1.recomputeProofStatus)(payload.proofId);
+                await (0, db_1.updateValidatorStatsForValidator)(run.validator_id);
                 const listeners = resultListeners.get(payload.proofId);
                 if (listeners) {
                     listeners.forEach((fn) => fn(payload));

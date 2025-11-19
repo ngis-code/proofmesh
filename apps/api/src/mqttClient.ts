@@ -7,7 +7,12 @@ import type {
   VerifyCommandPayload,
   ValidatorPresencePayload,
 } from '@proofmesh/shared-types';
-import { insertValidatorRun, recomputeProofStatus, updateValidatorPresence } from './db';
+import {
+  insertValidatorRun,
+  recomputeProofStatus,
+  updateValidatorPresence,
+  updateValidatorStatsForValidator,
+} from './db';
 
 type ResultListener = (payload: ResultPayload) => void;
 
@@ -55,7 +60,7 @@ export function getMqttClient(): MqttClient {
         const payload = JSON.parse(raw) as ResultPayload;
         logger.debug('Received MQTT result', { topic, payload });
 
-        await insertValidatorRun({
+        const run = await insertValidatorRun({
           proofId: payload.proofId,
           validatorId: payload.validatorId,
           result: payload.result,
@@ -64,6 +69,7 @@ export function getMqttClient(): MqttClient {
         });
 
         await recomputeProofStatus(payload.proofId);
+        await updateValidatorStatsForValidator(run.validator_id);
 
         const listeners = resultListeners.get(payload.proofId);
         if (listeners) {

@@ -19,6 +19,7 @@ import {
   upsertValidator,
   getValidatorById,
   updateValidatorPresence,
+  listValidatorStats,
 } from './db';
 import { sendStampToValidators, sendVerifyToValidators, waitForResults, getMqttClient } from './mqttClient';
 
@@ -235,13 +236,41 @@ fastify.post('/api/verify', async (request, reply) => {
   // Fast path: DB says this hash is already confirmed for this org.
   // In that case, we can safely return immediately without waiting
   // for live validator responses. This keeps repeated verifications
-  // very fast even with many validators in the network.
+  // very fast even with many validators in the network, but we still
+  // surface *which* validators contributed to the confirmation.
   if (mode === 'db_plus_validators' && hasConfirmed) {
+    // Prefer the most recent confirmed proof when summarising validator runs.
+    const confirmedProof =
+      proofs.find((p) => p.status === 'confirmed') ?? proofs[0];
+
+    let validatorsConfirmed = 0;
+    let validatorsTotal = 0;
+    let validatorsConfirmedIds: string[] = [];
+
+    if (confirmedProof) {
+      const runs = await getValidatorRunsForProof(confirmedProof.id);
+
+      // Collapse multiple runs per validator down to the latest one, then
+      // count how many ended in "valid".
+      const latestByValidator = new Map<string, (typeof runs)[number]>();
+      for (const run of runs) {
+        latestByValidator.set(run.validator_id, run);
+      }
+
+      const latestRuns = Array.from(latestByValidator.values());
+      validatorsTotal = latestRuns.length;
+      validatorsConfirmedIds = latestRuns
+        .filter((r) => r.result === 'valid')
+        .map((r) => r.validator_id);
+      validatorsConfirmed = validatorsConfirmedIds.length;
+    }
+
     return {
       mode,
       status,
-      validators_confirmed: 0,
-      validators_total: 0,
+      validators_confirmed: validatorsConfirmed,
+      validators_total: validatorsTotal,
+      validators_confirmed_ids: validatorsConfirmedIds,
       proofs,
     };
   }
@@ -393,6 +422,14 @@ fastify.get('/api/validator-runs', async (request) => {
   const safeLimit = Number.isNaN(parsedLimit) || parsedLimit <= 0 ? 100 : Math.min(parsedLimit, 1000);
   const runs = await listValidatorRuns(safeLimit);
   return { validatorRuns: runs };
+});
+
+fastify.get('/api/validator-stats', async (request) => {
+  const { limit } = request.query as { limit?: string };
+  const parsedLimit = limit ? Number(limit) : 100;
+  const safeLimit = Number.isNaN(parsedLimit) || parsedLimit <= 0 ? 100 : Math.min(parsedLimit, 1000);
+  const stats = await listValidatorStats(safeLimit);
+  return { stats };
 });
 
 async function start() {

@@ -13,6 +13,8 @@ exports.findProofsByOrgAndHash = findProofsByOrgAndHash;
 exports.getProofById = getProofById;
 exports.getValidatorRunsForProof = getValidatorRunsForProof;
 exports.insertValidatorRun = insertValidatorRun;
+exports.updateValidatorStatsForValidator = updateValidatorStatsForValidator;
+exports.listValidatorStats = listValidatorStats;
 exports.recomputeProofStatus = recomputeProofStatus;
 exports.listProofs = listProofs;
 exports.listOrgs = listOrgs;
@@ -66,9 +68,27 @@ async function getEnabledValidators(limit = null) {
 async function getOnlineEnabledValidators(limit = null) {
     // Randomize order so that when we sample, we get a different cohort
     // over time rather than always the same first N validators.
-    const baseSql = 'SELECT * FROM validators WHERE enabled = true AND online = true ORDER BY random()';
-    const sql = baseSql + (limit ? ' LIMIT $1' : '');
-    const params = limit ? [limit] : [];
+    //
+    // IMPORTANT: scope "online" validators to this API's region so that:
+    // - each region only sends MQTT commands to validators connected to
+    //   its own broker, and
+    // - cross-region work happens via HTTP /api/stamp fallback rather than
+    //   trying to talk to remote-region validators over MQTT directly.
+    //
+    // This relies on validators having a region string that matches the
+    // API_REGION env for the region they are physically running in.
+    const params = [];
+    let paramIndex = 1;
+    let sql = 'SELECT * FROM validators WHERE enabled = true AND online = true';
+    if (config.region) {
+        sql += ` AND region = $${paramIndex++}`;
+        params.push(config.region);
+    }
+    sql += ' ORDER BY random()';
+    if (limit) {
+        sql += ` LIMIT $${paramIndex++}`;
+        params.push(limit);
+    }
     const res = await exports.pool.query(sql, params);
     return res.rows;
 }
@@ -136,6 +156,30 @@ async function insertValidatorRun(params) {
      VALUES ($1, $2, $3, $4, $5, $6)
      RETURNING *`, [params.proofId, params.validatorId, params.result, params.signature, params.signedAt, params.latencyMs ?? null]);
     return res.rows[0];
+}
+async function updateValidatorStatsForValidator(validatorId) {
+    await exports.pool.query(`UPSERT INTO validator_stats (
+       validator_id,
+       total_runs,
+       total_valid,
+       total_invalid,
+       total_unknown,
+       last_seen_at
+     )
+     SELECT
+       validator_id,
+       COUNT(*)                                       AS total_runs,
+       COUNT(*) FILTER (WHERE result = 'valid')   AS total_valid,
+       COUNT(*) FILTER (WHERE result = 'invalid') AS total_invalid,
+       COUNT(*) FILTER (WHERE result = 'unknown') AS total_unknown,
+       MAX(signed_at)                               AS last_seen_at
+     FROM validator_runs
+     WHERE validator_id = $1
+     GROUP BY validator_id`, [validatorId]);
+}
+async function listValidatorStats(limit = 100) {
+    const res = await exports.pool.query('SELECT * FROM validator_stats ORDER BY total_runs DESC LIMIT $1', [limit]);
+    return res.rows;
 }
 async function recomputeProofStatus(proofId) {
     const runs = await getValidatorRunsForProof(proofId);
