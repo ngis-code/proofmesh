@@ -7,6 +7,7 @@ export interface AuthContext {
   via: 'jwt' | 'api-key';
   userId?: string;
   orgId?: string;
+  scopes?: string[];
   raw: Record<string, unknown>;
 }
 

@@ -38,6 +38,8 @@ fastify.addHook('preHandler', async (request, reply) => {
             if (!ctx) {
                 return reply.status(401).send({ error: 'invalid_api_key' });
             }
+            // Enforce basic scopes: write is required for mutations; read for reads.
+            ctx.scopes = ctx.scopes ?? ['read', 'write'];
             request.auth = ctx;
             return;
         }
@@ -120,13 +122,35 @@ async function postJson(url, body, timeoutMs, extraHeaders = {}) {
 }
 fastify.post('/api/stamp', async (request, reply) => {
     const body = request.body;
-    if (!body?.orgId || !body?.hash) {
-        return reply.status(400).send({ error: 'orgId and hash are required' });
+    if (!body?.hash) {
+        return reply.status(400).send({ error: 'hash is required' });
+    }
+    // Determine effective org ID.
+    const auth = request.auth;
+    const bodyOrgId = body.orgId;
+    let orgId = bodyOrgId;
+    if (auth?.via === 'api-key') {
+        // For API keys, always trust the org from the key, not from the body.
+        orgId = auth.orgId;
+        if (!orgId) {
+            return reply.status(403).send({ error: 'api_key_missing_org' });
+        }
+        // Enforce write scope for stamping.
+        const scopes = auth.scopes ?? ['read', 'write'];
+        if (!scopes.includes('write')) {
+            return reply.status(403).send({ error: 'forbidden_scope' });
+        }
+    }
+    if (!orgId) {
+        return reply.status(400).send({ error: 'orgId is required' });
+    }
+    if (bodyOrgId && bodyOrgId !== orgId) {
+        return reply.status(403).send({ error: 'org_mismatch' });
     }
     const isFallbackRequest = request.headers['x-proofmesh-stamp-fallback'] === '1';
     shared_config_1.logger.info('Stamp request received', {
         bodyMeta: {
-            orgId: body.orgId,
+            orgId,
             hasArtifactId: !!body.artifactId,
         },
         isFallbackRequest,
@@ -178,13 +202,13 @@ fastify.post('/api/stamp', async (request, reply) => {
     const artifactType = body.artifactType ?? 'file';
     let versionOf = null;
     if (body.artifactId) {
-        const latest = await (0, db_1.findLatestProofByOrgAndArtifact)(body.orgId, body.artifactId);
+        const latest = await (0, db_1.findLatestProofByOrgAndArtifact)(orgId, body.artifactId);
         if (latest) {
             versionOf = latest.id;
         }
     }
     const proof = await (0, db_1.insertProof)({
-        orgId: body.orgId,
+        orgId,
         hash: body.hash,
         artifactType,
         artifactId: body.artifactId ?? null,
@@ -210,6 +234,17 @@ fastify.post('/api/verify', async (request, reply) => {
     const body = request.body;
     if (!body?.orgId || !body?.hash) {
         return reply.status(400).send({ error: 'orgId and hash are required' });
+    }
+    const auth = request.auth;
+    if (auth?.via === 'api-key') {
+        const apiOrgId = auth.orgId;
+        const scopes = auth.scopes ?? ['read', 'write'];
+        if (!scopes.includes('read')) {
+            return reply.status(403).send({ error: 'forbidden_scope' });
+        }
+        if (apiOrgId && apiOrgId !== body.orgId) {
+            return reply.status(403).send({ error: 'org_mismatch' });
+        }
     }
     const mode = body.mode ?? 'db_only';
     const proofs = await (0, db_1.findProofsByOrgAndHash)(body.orgId, body.hash);
@@ -333,6 +368,92 @@ fastify.get('/api/orgs', async () => {
     const orgs = await (0, db_1.listOrgs)();
     return { orgs };
 });
+fastify.post('/api/orgs', async (request, reply) => {
+    if (!request.auth || request.auth.via !== 'jwt') {
+        return reply.status(403).send({ error: 'forbidden' });
+    }
+    const userId = request.auth.userId;
+    if (!userId) {
+        return reply.status(403).send({ error: 'forbidden' });
+    }
+    const body = request.body;
+    if (!body?.name || typeof body.name !== 'string' || !body.name.trim()) {
+        return reply.status(400).send({ error: 'name is required' });
+    }
+    const org = await (0, db_1.insertOrg)({ name: body.name.trim() });
+    // Make the creator an admin of this org.
+    await (0, db_1.upsertOrgUser)({ orgId: org.id, userId, role: 'admin' });
+    return { org };
+});
+fastify.get('/api/my-orgs', async (request, reply) => {
+    if (!request.auth || request.auth.via !== 'jwt') {
+        return reply.status(403).send({ error: 'forbidden' });
+    }
+    const userId = request.auth.userId;
+    if (!userId) {
+        return reply.status(403).send({ error: 'forbidden' });
+    }
+    const orgs = await (0, db_1.listOrgsForUser)(userId);
+    return { orgs };
+});
+// Org user/role management (ties Appwrite users to orgs in Cockroach).
+fastify.get('/api/orgs/:orgId/users', async (request, reply) => {
+    const { orgId } = request.params;
+    if (!request.auth || request.auth.via !== 'jwt') {
+        return reply.status(403).send({ error: 'forbidden' });
+    }
+    const userId = request.auth.userId;
+    if (!userId) {
+        return reply.status(403).send({ error: 'forbidden' });
+    }
+    const allowed = await (0, db_1.userHasOrgRole)({ userId, orgId, roles: ['admin'] });
+    if (!allowed) {
+        return reply.status(403).send({ error: 'forbidden' });
+    }
+    const users = await (0, db_1.listOrgUsersForOrg)(orgId);
+    return { users };
+});
+fastify.post('/api/orgs/:orgId/users', async (request, reply) => {
+    const { orgId } = request.params;
+    if (!request.auth || request.auth.via !== 'jwt') {
+        return reply.status(403).send({ error: 'forbidden' });
+    }
+    const userId = request.auth.userId;
+    if (!userId) {
+        return reply.status(403).send({ error: 'forbidden' });
+    }
+    const allowed = await (0, db_1.userHasOrgRole)({ userId, orgId, roles: ['admin'] });
+    if (!allowed) {
+        return reply.status(403).send({ error: 'forbidden' });
+    }
+    const body = request.body;
+    if (!body?.userId) {
+        return reply.status(400).send({ error: 'userId is required' });
+    }
+    const role = body.role ?? 'viewer';
+    const validRoles = new Set(['admin', 'viewer']);
+    if (!validRoles.has(role)) {
+        return reply.status(400).send({ error: 'invalid_role' });
+    }
+    const orgUser = await (0, db_1.upsertOrgUser)({ orgId, userId: body.userId, role });
+    return { user: orgUser };
+});
+fastify.post('/api/orgs/:orgId/users/:userId/remove', async (request, reply) => {
+    const { orgId, userId: targetUserId } = request.params;
+    if (!request.auth || request.auth.via !== 'jwt') {
+        return reply.status(403).send({ error: 'forbidden' });
+    }
+    const userId = request.auth.userId;
+    if (!userId) {
+        return reply.status(403).send({ error: 'forbidden' });
+    }
+    const allowed = await (0, db_1.userHasOrgRole)({ userId, orgId, roles: ['admin'] });
+    if (!allowed) {
+        return reply.status(403).send({ error: 'forbidden' });
+    }
+    await (0, db_1.deleteOrgUser)({ orgId, userId: targetUserId });
+    return { ok: true };
+});
 // Org API key management (for now, keep it simple and rely on orgId in the path).
 fastify.get('/api/orgs/:orgId/api-keys', async (request, reply) => {
     const { orgId } = request.params;
@@ -348,6 +469,14 @@ fastify.post('/api/orgs/:orgId/api-keys', async (request, reply) => {
     const { orgId } = request.params;
     // Creation should be done by a logged-in user (JWT), not by an API key.
     if (!request.auth || request.auth.via !== 'jwt') {
+        return reply.status(403).send({ error: 'forbidden' });
+    }
+    const userId = request.auth.userId;
+    if (!userId) {
+        return reply.status(403).send({ error: 'forbidden' });
+    }
+    const allowed = await (0, db_1.userHasOrgRole)({ userId, orgId, roles: ['admin'] });
+    if (!allowed) {
         return reply.status(403).send({ error: 'forbidden' });
     }
     const body = request.body;
@@ -366,6 +495,14 @@ fastify.post('/api/orgs/:orgId/api-keys', async (request, reply) => {
 fastify.post('/api/orgs/:orgId/api-keys/:id/revoke', async (request, reply) => {
     const { orgId, id } = request.params;
     if (!request.auth || request.auth.via !== 'jwt') {
+        return reply.status(403).send({ error: 'forbidden' });
+    }
+    const userId = request.auth.userId;
+    if (!userId) {
+        return reply.status(403).send({ error: 'forbidden' });
+    }
+    const allowed = await (0, db_1.userHasOrgRole)({ userId, orgId, roles: ['admin'] });
+    if (!allowed) {
         return reply.status(403).send({ error: 'forbidden' });
     }
     const revoked = await (0, db_1.revokeOrgApiKey)(orgId, id);

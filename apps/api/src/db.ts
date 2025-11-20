@@ -39,6 +39,15 @@ export interface OrgApiKey {
   revoked_at: string | null;
 }
 
+// Org/user role mapping.
+export interface OrgUser {
+  id: string;
+  org_id: string;
+  user_id: string;
+  role: string;
+  created_at: string;
+}
+
 export const pool = new Pool({
   host: config.db.host,
   port: config.db.port,
@@ -319,6 +328,32 @@ export async function listOrgs(): Promise<Org[]> {
   return res.rows;
 }
 
+export async function insertOrg(params: { name: string }): Promise<Org> {
+  const res = await pool.query<Org>(
+    `INSERT INTO orgs (name)
+     VALUES ($1)
+     RETURNING *`,
+    [params.name],
+  );
+  return res.rows[0];
+}
+
+export interface OrgWithRole extends Org {
+  role: string;
+}
+
+export async function listOrgsForUser(userId: string): Promise<OrgWithRole[]> {
+  const res = await pool.query<OrgWithRole>(
+    `SELECT o.id, o.name, o.created_at, ou.role
+     FROM orgs o
+     JOIN org_users ou ON ou.org_id = o.id
+     WHERE ou.user_id = $1
+     ORDER BY o.created_at DESC`,
+    [userId],
+  );
+  return res.rows;
+}
+
 export async function listValidators(): Promise<Validator[]> {
   const res = await pool.query<Validator>('SELECT * FROM validators ORDER BY created_at DESC');
   return res.rows;
@@ -330,6 +365,67 @@ export async function listValidatorRuns(limit = 100): Promise<ValidatorRun[]> {
     [limit],
   );
   return res.rows;
+}
+
+export async function listOrgUsersForUser(userId: string): Promise<OrgUser[]> {
+  const res = await pool.query<OrgUser>(
+    `SELECT * FROM org_users
+     WHERE user_id = $1
+     ORDER BY created_at DESC`,
+    [userId],
+  );
+  return res.rows;
+}
+
+export async function listOrgUsersForOrg(orgId: string): Promise<OrgUser[]> {
+  const res = await pool.query<OrgUser>(
+    `SELECT * FROM org_users
+     WHERE org_id = $1
+     ORDER BY created_at DESC`,
+    [orgId],
+  );
+  return res.rows;
+}
+
+export async function upsertOrgUser(params: {
+  orgId: string;
+  userId: string;
+  role: string;
+}): Promise<OrgUser> {
+  const res = await pool.query<OrgUser>(
+    `INSERT INTO org_users (org_id, user_id, role)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (org_id, user_id)
+     DO UPDATE SET role = EXCLUDED.role
+     RETURNING *`,
+    [params.orgId, params.userId, params.role],
+  );
+  return res.rows[0];
+}
+
+export async function deleteOrgUser(params: { orgId: string; userId: string }): Promise<void> {
+  await pool.query(
+    `DELETE FROM org_users
+     WHERE org_id = $1 AND user_id = $2`,
+    [params.orgId, params.userId],
+  );
+}
+
+export async function userHasOrgRole(params: {
+  userId: string;
+  orgId: string;
+  roles: string[];
+}): Promise<boolean> {
+  const res = await pool.query<{ exists: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM org_users
+       WHERE org_id = $1
+         AND user_id = $2
+         AND role = ANY($3::STRING[])
+     ) AS exists`,
+    [params.orgId, params.userId, params.roles],
+  );
+  return res.rows[0]?.exists ?? false;
 }
 
 export async function insertOrgApiKey(params: {

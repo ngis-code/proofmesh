@@ -71,6 +71,7 @@ export async function verifyApiKey(rawKey: string): Promise<AuthContext | null> 
     via: 'api-key',
     userId: undefined,
     orgId: key.org_id,
+    scopes: key.scopes,
     raw: {
       apiKeyId: key.id,
       label: key.label,

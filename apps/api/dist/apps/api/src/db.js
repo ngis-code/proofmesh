@@ -18,8 +18,15 @@ exports.listValidatorStats = listValidatorStats;
 exports.recomputeProofStatus = recomputeProofStatus;
 exports.listProofs = listProofs;
 exports.listOrgs = listOrgs;
+exports.insertOrg = insertOrg;
+exports.listOrgsForUser = listOrgsForUser;
 exports.listValidators = listValidators;
 exports.listValidatorRuns = listValidatorRuns;
+exports.listOrgUsersForUser = listOrgUsersForUser;
+exports.listOrgUsersForOrg = listOrgUsersForOrg;
+exports.upsertOrgUser = upsertOrgUser;
+exports.deleteOrgUser = deleteOrgUser;
+exports.userHasOrgRole = userHasOrgRole;
 exports.insertOrgApiKey = insertOrgApiKey;
 exports.listOrgApiKeysForOrg = listOrgApiKeysForOrg;
 exports.revokeOrgApiKey = revokeOrgApiKey;
@@ -224,6 +231,20 @@ async function listOrgs() {
     const res = await exports.pool.query('SELECT * FROM orgs ORDER BY created_at DESC');
     return res.rows;
 }
+async function insertOrg(params) {
+    const res = await exports.pool.query(`INSERT INTO orgs (name)
+     VALUES ($1)
+     RETURNING *`, [params.name]);
+    return res.rows[0];
+}
+async function listOrgsForUser(userId) {
+    const res = await exports.pool.query(`SELECT o.id, o.name, o.created_at, ou.role
+     FROM orgs o
+     JOIN org_users ou ON ou.org_id = o.id
+     WHERE ou.user_id = $1
+     ORDER BY o.created_at DESC`, [userId]);
+    return res.rows;
+}
 async function listValidators() {
     const res = await exports.pool.query('SELECT * FROM validators ORDER BY created_at DESC');
     return res.rows;
@@ -231,6 +252,39 @@ async function listValidators() {
 async function listValidatorRuns(limit = 100) {
     const res = await exports.pool.query('SELECT * FROM validator_runs ORDER BY signed_at DESC LIMIT $1', [limit]);
     return res.rows;
+}
+async function listOrgUsersForUser(userId) {
+    const res = await exports.pool.query(`SELECT * FROM org_users
+     WHERE user_id = $1
+     ORDER BY created_at DESC`, [userId]);
+    return res.rows;
+}
+async function listOrgUsersForOrg(orgId) {
+    const res = await exports.pool.query(`SELECT * FROM org_users
+     WHERE org_id = $1
+     ORDER BY created_at DESC`, [orgId]);
+    return res.rows;
+}
+async function upsertOrgUser(params) {
+    const res = await exports.pool.query(`INSERT INTO org_users (org_id, user_id, role)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (org_id, user_id)
+     DO UPDATE SET role = EXCLUDED.role
+     RETURNING *`, [params.orgId, params.userId, params.role]);
+    return res.rows[0];
+}
+async function deleteOrgUser(params) {
+    await exports.pool.query(`DELETE FROM org_users
+     WHERE org_id = $1 AND user_id = $2`, [params.orgId, params.userId]);
+}
+async function userHasOrgRole(params) {
+    const res = await exports.pool.query(`SELECT EXISTS (
+       SELECT 1 FROM org_users
+       WHERE org_id = $1
+         AND user_id = $2
+         AND role = ANY($3::STRING[])
+     ) AS exists`, [params.orgId, params.userId, params.roles]);
+    return res.rows[0]?.exists ?? false;
 }
 async function insertOrgApiKey(params) {
     const res = await exports.pool.query(`INSERT INTO org_api_keys (org_id, key_hash, label, scopes, rate_limit_per_minute)

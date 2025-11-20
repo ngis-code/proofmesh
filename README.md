@@ -83,15 +83,20 @@ This brings up:
   - `POST /api/verify`
   - `GET  /api/proofs/:id`
   - `GET  /api/proofs/:id/validators`
-  - `GET  /api/proofs?limit=100`              – latest proofs (debug)
-  - `GET  /api/orgs`                          – orgs (debug)
-  - `GET  /api/orgs/:orgId/api-keys`          – list API keys for an org
-  - `POST /api/orgs/:orgId/api-keys`          – create API key for an org
-  - `POST /api/orgs/:orgId/api-keys/:id/revoke` – revoke API key
-  - `GET  /api/validators`                    – validators + presence (debug)
-  - `GET  /api/validator-runs?limit=100`      – validator runs (debug)
-  - `GET  /api/validator-stats`               – per-validator aggregated stats
-  - `POST /api/validators/register`           – validator self-registration (internal)
+  - `GET  /api/proofs?limit=100`                   – latest proofs (debug)
+  - `GET  /api/orgs`                               – list all orgs (admin / debug)
+  - `POST /api/orgs`                               – create org (creator becomes org admin)
+  - `GET  /api/my-orgs`                            – orgs current user belongs to (with role)
+  - `GET  /api/orgs/:orgId/users`                  – list users/roles for an org (admin-only)
+  - `POST /api/orgs/:orgId/users`                  – add/update user role in an org (admin-only)
+  - `POST /api/orgs/:orgId/users/:userId/remove`   – remove user from org (admin-only)
+  - `GET  /api/orgs/:orgId/api-keys`               – list API keys for an org
+  - `POST /api/orgs/:orgId/api-keys`               – create API key for an org
+  - `POST /api/orgs/:orgId/api-keys/:id/revoke`    – revoke API key
+  - `GET  /api/validators`                         – validators + presence (debug)
+  - `GET  /api/validator-runs?limit=100`           – validator runs (debug)
+  - `GET  /api/validator-stats`                    – per-validator aggregated stats
+  - `POST /api/validators/register`                – validator self-registration (internal)
 - **Web UI**: `http://localhost:5173`
 - **Cockroach Admin UI** (dev): `http://localhost:8080`
 - **n8n UI** (optional): `http://localhost:5678`
@@ -188,6 +193,68 @@ Even with auth enabled:
 - `POST /api/verify` – **public** (hash verification by anyone).
 
 All other endpoints require either a valid `x-api-key` or a valid Appwrite JWT (when auth is configured).
+
+---
+
+### Org & User Management
+
+#### `POST /api/orgs`
+
+Create a new org. Requires a valid Appwrite JWT.
+
+**Request:**
+
+```http
+POST /api/orgs
+Authorization: Bearer <APPWRITE_JWT>
+Content-Type: application/json
+
+{ "name": "My Org Name" }
+```
+
+**Behavior:**
+
+- Inserts a new row into `orgs` with a generated UUID.
+- Creates/updates an `org_users` row making the calling user an **admin** of that org.
+- Returns `{ org }` with the generated `id`.
+
+#### `GET /api/my-orgs`
+
+Return orgs the current user belongs to (based on `org_users`), including role.
+
+**Request:**
+
+```http
+GET /api/my-orgs
+Authorization: Bearer <APPWRITE_JWT>
+```
+
+**Response:**
+
+```json
+{
+  "orgs": [
+    {
+      "id": "3333...",
+      "name": "My Org Name",
+      "created_at": "2025-11-20T...",
+      "role": "admin"
+    }
+  ]
+}
+```
+
+#### `GET /api/orgs/:orgId/users`
+
+List users and roles for an org (admin-only).
+
+#### `POST /api/orgs/:orgId/users`
+
+Add or update a user’s role in an org. Body: `{ "userId": "APPWRITE_USER_ID", "role": "admin" | "viewer" }`.
+
+#### `POST /api/orgs/:orgId/users/:userId/remove`
+
+Remove a user from an org.
 
 ---
 
@@ -386,4 +453,3 @@ Some obvious next steps beyond this v1:
   - Managed integrations for Drive/S3, Slack/Teams, ticketing systems, etc.
 
 This v1 is intentionally simple and heavily commented so that it can serve as a foundation for those future improvements.
-git pu
