@@ -26,6 +26,19 @@ export interface ValidatorStats {
   last_seen_at: string | null;
 }
 
+// Per-organization API keys for server-to-server access.
+export interface OrgApiKey {
+  id: string;
+  org_id: string;
+  key_hash: string;
+  label: string | null;
+  scopes: string[];
+  rate_limit_per_minute: number | null;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+}
+
 export const pool = new Pool({
   host: config.db.host,
   port: config.db.port,
@@ -317,6 +330,68 @@ export async function listValidatorRuns(limit = 100): Promise<ValidatorRun[]> {
     [limit],
   );
   return res.rows;
+}
+
+export async function insertOrgApiKey(params: {
+  orgId: string;
+  keyHash: string;
+  label?: string | null;
+  scopes?: string[];
+  rateLimitPerMinute?: number | null;
+}): Promise<OrgApiKey> {
+  const res = await pool.query<OrgApiKey>(
+    `INSERT INTO org_api_keys (org_id, key_hash, label, scopes, rate_limit_per_minute)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING *`,
+    [
+      params.orgId,
+      params.keyHash,
+      params.label ?? null,
+      params.scopes ?? ['read', 'write'],
+      params.rateLimitPerMinute ?? null,
+    ],
+  );
+  return res.rows[0];
+}
+
+export async function listOrgApiKeysForOrg(orgId: string): Promise<OrgApiKey[]> {
+  const res = await pool.query<OrgApiKey>(
+    `SELECT * FROM org_api_keys
+     WHERE org_id = $1
+     ORDER BY created_at DESC`,
+    [orgId],
+  );
+  return res.rows;
+}
+
+export async function revokeOrgApiKey(orgId: string, id: string): Promise<OrgApiKey | null> {
+  const res = await pool.query<OrgApiKey>(
+    `UPDATE org_api_keys
+     SET revoked_at = now()
+     WHERE id = $1 AND org_id = $2 AND revoked_at IS NULL
+     RETURNING *`,
+    [id, orgId],
+  );
+  return res.rows[0] ?? null;
+}
+
+export async function findOrgApiKeyByHash(keyHash: string): Promise<OrgApiKey | null> {
+  const res = await pool.query<OrgApiKey>(
+    `SELECT * FROM org_api_keys
+     WHERE key_hash = $1
+       AND revoked_at IS NULL`,
+    [keyHash],
+  );
+  return res.rows[0] ?? null;
+}
+
+export async function touchOrgApiKeyUsage(id: string): Promise<void> {
+  await pool.query(
+    `UPDATE org_api_keys
+     SET last_used_at = now()
+     WHERE id = $1`,
+    [id],
+  );
 }
 
 

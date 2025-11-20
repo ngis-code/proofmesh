@@ -20,8 +20,19 @@ import {
   getValidatorById,
   updateValidatorPresence,
   listValidatorStats,
+  listOrgApiKeysForOrg,
+  revokeOrgApiKey,
 } from './db';
 import { sendStampToValidators, sendVerifyToValidators, waitForResults, getMqttClient } from './mqttClient';
+import { isAuthEnabled, verifyAppwriteJwt, type AuthContext } from './auth';
+import { ApiKeyRateLimitError, verifyApiKey, createApiKeyForOrg } from './apiKeys';
+
+declare module 'fastify' {
+  // eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+  interface FastifyRequest {
+    auth?: AuthContext;
+  }
+}
 
 const config = loadApiConfig();
 const fastify = Fastify({
@@ -34,6 +45,56 @@ async function registerPlugins() {
     origin: true,
   });
 }
+
+// Global auth hook.
+fastify.addHook('preHandler', async (request, reply) => {
+  // Public endpoints that remain open:
+  // Use the raw URL so this works reliably in hooks.
+  const urlPath = request.raw.url?.split('?')[0] ?? '';
+  if (urlPath === '/api/health' || urlPath === '/api/verify') {
+    return;
+  }
+
+  // 1) Try x-api-key first (server-to-server).
+  const apiKeyHeader = request.headers['x-api-key'] as string | undefined;
+  if (apiKeyHeader) {
+    try {
+      const ctx = await verifyApiKey(apiKeyHeader);
+      if (!ctx) {
+        return reply.status(401).send({ error: 'invalid_api_key' });
+      }
+      request.auth = ctx;
+      return;
+    } catch (err) {
+      if (err instanceof ApiKeyRateLimitError) {
+        return reply.status(429).send({ error: 'api_key_rate_limited' });
+      }
+      request.log.error({ err }, 'API key auth failed');
+      return reply.status(401).send({ error: 'invalid_api_key' });
+    }
+  }
+
+  // 2) Fall back to Appwrite JWT if configured.
+  if (!isAuthEnabled()) {
+    // Auth not configured and no API key present: behave as before (open).
+    return;
+  }
+
+  const authHeader = request.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return reply.status(401).send({ error: 'missing_token' });
+  }
+
+  const token = authHeader.slice('Bearer '.length);
+
+  try {
+    const ctx = await verifyAppwriteJwt(token);
+    request.auth = ctx;
+  } catch (err) {
+    request.log.error({ err }, 'Auth failed');
+    return reply.status(401).send({ error: 'invalid_token' });
+  }
+});
 
 fastify.get('/api/health', async () => ({ status: 'ok' }));
 
@@ -359,6 +420,63 @@ fastify.get('/api/proofs', async (request) => {
 fastify.get('/api/orgs', async () => {
   const orgs = await listOrgs();
   return { orgs };
+});
+
+// Org API key management (for now, keep it simple and rely on orgId in the path).
+fastify.get('/api/orgs/:orgId/api-keys', async (request, reply) => {
+  const { orgId } = request.params as { orgId: string };
+
+  // Require some form of auth; in future we can enforce that the user belongs to orgId.
+  if (!request.auth) {
+    return reply.status(401).send({ error: 'missing_token_or_api_key' });
+  }
+
+  const keys = await listOrgApiKeysForOrg(orgId);
+  // Never return raw keys, only metadata.
+  return { apiKeys: keys };
+});
+
+fastify.post('/api/orgs/:orgId/api-keys', async (request, reply) => {
+  const { orgId } = request.params as { orgId: string };
+
+  // Creation should be done by a logged-in user (JWT), not by an API key.
+  if (!request.auth || request.auth.via !== 'jwt') {
+    return reply.status(403).send({ error: 'forbidden' });
+  }
+
+  const body = request.body as {
+    label?: string | null;
+    scopes?: string[];
+    rateLimitPerMinute?: number | null;
+  };
+
+  const { apiKey, rawKey } = await createApiKeyForOrg({
+    orgId,
+    label: body?.label ?? null,
+    scopes: body?.scopes,
+    rateLimitPerMinute: body?.rateLimitPerMinute ?? null,
+  });
+
+  // Show the raw key once so the caller can store it securely.
+  return {
+    apiKey,
+    rawKey,
+  };
+});
+
+fastify.post('/api/orgs/:orgId/api-keys/:id/revoke', async (request, reply) => {
+  const { orgId, id } = request.params as { orgId: string; id: string };
+
+  if (!request.auth || request.auth.via !== 'jwt') {
+    return reply.status(403).send({ error: 'forbidden' });
+  }
+
+  const revoked = await revokeOrgApiKey(orgId, id);
+  if (!revoked) {
+    return reply.status(404).send({ error: 'not_found' });
+  }
+
+  return { apiKey: revoked };
 });
 
 // Lightweight registration endpoint so validators can self-register

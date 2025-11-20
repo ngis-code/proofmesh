@@ -10,6 +10,8 @@ const cors_1 = __importDefault(require("@fastify/cors"));
 const shared_config_1 = require("@proofmesh/shared-config");
 const db_1 = require("./db");
 const mqttClient_1 = require("./mqttClient");
+const auth_1 = require("./auth");
+const apiKeys_1 = require("./apiKeys");
 const config = (0, shared_config_1.loadApiConfig)();
 const fastify = (0, fastify_1.default)({
     logger: false,
@@ -20,6 +22,52 @@ async function registerPlugins() {
         origin: true,
     });
 }
+// Global auth hook.
+fastify.addHook('preHandler', async (request, reply) => {
+    // Public endpoints that remain open:
+    // Use the raw URL so this works reliably in hooks.
+    const urlPath = request.raw.url?.split('?')[0] ?? '';
+    if (urlPath === '/api/health' || urlPath === '/api/verify') {
+        return;
+    }
+    // 1) Try x-api-key first (server-to-server).
+    const apiKeyHeader = request.headers['x-api-key'];
+    if (apiKeyHeader) {
+        try {
+            const ctx = await (0, apiKeys_1.verifyApiKey)(apiKeyHeader);
+            if (!ctx) {
+                return reply.status(401).send({ error: 'invalid_api_key' });
+            }
+            request.auth = ctx;
+            return;
+        }
+        catch (err) {
+            if (err instanceof apiKeys_1.ApiKeyRateLimitError) {
+                return reply.status(429).send({ error: 'api_key_rate_limited' });
+            }
+            request.log.error({ err }, 'API key auth failed');
+            return reply.status(401).send({ error: 'invalid_api_key' });
+        }
+    }
+    // 2) Fall back to Appwrite JWT if configured.
+    if (!(0, auth_1.isAuthEnabled)()) {
+        // Auth not configured and no API key present: behave as before (open).
+        return;
+    }
+    const authHeader = request.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return reply.status(401).send({ error: 'missing_token' });
+    }
+    const token = authHeader.slice('Bearer '.length);
+    try {
+        const ctx = await (0, auth_1.verifyAppwriteJwt)(token);
+        request.auth = ctx;
+    }
+    catch (err) {
+        request.log.error({ err }, 'Auth failed');
+        return reply.status(401).send({ error: 'invalid_token' });
+    }
+});
 fastify.get('/api/health', async () => ({ status: 'ok' }));
 async function postJson(url, body, timeoutMs, extraHeaders = {}) {
     return new Promise((resolve, reject) => {
@@ -284,6 +332,47 @@ fastify.get('/api/proofs', async (request) => {
 fastify.get('/api/orgs', async () => {
     const orgs = await (0, db_1.listOrgs)();
     return { orgs };
+});
+// Org API key management (for now, keep it simple and rely on orgId in the path).
+fastify.get('/api/orgs/:orgId/api-keys', async (request, reply) => {
+    const { orgId } = request.params;
+    // Require some form of auth; in future we can enforce that the user belongs to orgId.
+    if (!request.auth) {
+        return reply.status(401).send({ error: 'missing_token_or_api_key' });
+    }
+    const keys = await (0, db_1.listOrgApiKeysForOrg)(orgId);
+    // Never return raw keys, only metadata.
+    return { apiKeys: keys };
+});
+fastify.post('/api/orgs/:orgId/api-keys', async (request, reply) => {
+    const { orgId } = request.params;
+    // Creation should be done by a logged-in user (JWT), not by an API key.
+    if (!request.auth || request.auth.via !== 'jwt') {
+        return reply.status(403).send({ error: 'forbidden' });
+    }
+    const body = request.body;
+    const { apiKey, rawKey } = await (0, apiKeys_1.createApiKeyForOrg)({
+        orgId,
+        label: body?.label ?? null,
+        scopes: body?.scopes,
+        rateLimitPerMinute: body?.rateLimitPerMinute ?? null,
+    });
+    // Show the raw key once so the caller can store it securely.
+    return {
+        apiKey,
+        rawKey,
+    };
+});
+fastify.post('/api/orgs/:orgId/api-keys/:id/revoke', async (request, reply) => {
+    const { orgId, id } = request.params;
+    if (!request.auth || request.auth.via !== 'jwt') {
+        return reply.status(403).send({ error: 'forbidden' });
+    }
+    const revoked = await (0, db_1.revokeOrgApiKey)(orgId, id);
+    if (!revoked) {
+        return reply.status(404).send({ error: 'not_found' });
+    }
+    return { apiKey: revoked };
 });
 // Lightweight registration endpoint so validators can self-register
 // on startup. In production this would be authenticated and likely

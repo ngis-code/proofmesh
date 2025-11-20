@@ -85,8 +85,12 @@ This brings up:
   - `GET  /api/proofs/:id/validators`
   - `GET  /api/proofs?limit=100`              – latest proofs (debug)
   - `GET  /api/orgs`                          – orgs (debug)
+  - `GET  /api/orgs/:orgId/api-keys`          – list API keys for an org
+  - `POST /api/orgs/:orgId/api-keys`          – create API key for an org
+  - `POST /api/orgs/:orgId/api-keys/:id/revoke` – revoke API key
   - `GET  /api/validators`                    – validators + presence (debug)
   - `GET  /api/validator-runs?limit=100`      – validator runs (debug)
+  - `GET  /api/validator-stats`               – per-validator aggregated stats
   - `POST /api/validators/register`           – validator self-registration (internal)
 - **Web UI**: `http://localhost:5173`
 - **Cockroach Admin UI** (dev): `http://localhost:8080`
@@ -135,6 +139,58 @@ At a high level, ProofMesh v1 looks like this:
 
 ## API Overview
 
+### Authentication & Authorization
+
+ProofMesh supports two auth mechanisms:
+
+- **User auth (Appwrite JWT)** – for SaaS UI / dashboard.
+- **Org API keys** – for server-to-server integrations.
+
+#### Appwrite JWT (users)
+
+When `APPWRITE_ENDPOINT` and `APPWRITE_PROJECT_ID` are set for the API:
+
+- Most endpoints expect:
+
+  ```http
+  Authorization: Bearer <APPWRITE_JWT>
+  ```
+
+- The API validates the JWT by calling Appwrite:
+
+  ```http
+  GET /v1/account
+  X-Appwrite-Project: <APPWRITE_PROJECT_ID>
+  X-Appwrite-JWT: <APPWRITE_JWT>
+  ```
+
+- If Appwrite returns 200 with a user object, the request is allowed and `request.auth.via === "jwt"`.
+
+#### Org API keys (servers)
+
+- API keys live in the `org_api_keys` table as **SHA-256 hashes** of the raw key.
+- To authenticate from a server, send:
+
+  ```http
+  x-api-key: <raw_api_key>
+  ```
+
+- The API:
+  - Hashes the key and looks up `org_api_keys.key_hash` (only non-revoked keys).
+  - Enforces `rate_limit_per_minute` per key (simple per-process bucket).
+  - Attaches `request.auth.via === "api-key"` and `request.auth.orgId`.
+
+#### Public endpoints
+
+Even with auth enabled:
+
+- `GET /api/health` – always public.
+- `POST /api/verify` – **public** (hash verification by anyone).
+
+All other endpoints require either a valid `x-api-key` or a valid Appwrite JWT (when auth is configured).
+
+---
+
 ### `POST /api/stamp`
 
 Stamp a new hash for an org.
@@ -152,11 +208,32 @@ Stamp a new hash for an org.
 
 **Behavior:**
 
-- Writes a new row in `proofs` with `status = 'pending'`.
-- If `artifactId` is provided:
-  - Links `version_of` to the latest proof for `(orgId, artifactId)` when present.
-- Selects enabled validators (up to 3) and publishes a `STAMP` command for each via MQTT.
-- Returns the proof plus the list of validator IDs that were targeted.
+- First, the API checks **online validators in this region**:
+  - If fewer than `STAMP_MIN_ONLINE_VALIDATORS` are online and this is **not** already a fallback request, it will try HTTP fallback to peer regions (`STAMP_FALLBACK_APIS`) before creating any proof rows.
+  - If no region can handle the stamp, returns:
+
+    ```json
+    {
+      "error": "not_enough_online_validators",
+      "online": 0,
+      "required": 1
+    }
+    ```
+
+- Once a region accepts the stamp:
+  - Writes a new row in `proofs` with `status = "pending"`.
+  - If `artifactId` is provided:
+    - Links `version_of` to the latest proof for `(orgId, artifactId)` when present.
+  - Selects online, enabled validators in this API’s region (sample size is configurable via env).
+  - Publishes a `STAMP` command for each selected validator via MQTT.
+  - Returns:
+
+    ```json
+    {
+      "proof": { "id": "...", "org_id": "...", "hash": "...", "status": "pending", "...": "..." },
+      "validators": ["validator_id_1", "validator_id_2"]
+    }
+    ```
 
 ### `POST /api/verify`
 
@@ -180,7 +257,7 @@ Verify whether a hash is known for an org.
 
 - **`db_plus_validators`**:
   - Step 1: Perform the same DB lookup as `db_only`.
-  - Step 2: If DB already has a confirmed proof, return immediately with `status: "valid"`.
+  - Step 2: If DB already has a confirmed proof, return immediately with `status: "valid"` (no live MQTT calls).
   - Step 3: If not confirmed:
     - Ensure there is a `proofs` row (type `"verify"` if needed).
     - Select enabled validators (up to 3) and publish `VERIFY` commands via MQTT.
@@ -190,7 +267,9 @@ Verify whether a hash is known for an org.
       - `validators_total: <number of validators asked>`
       - `validators_requested: [<validatorIds>]`
       - `proof`: the proof record being checked.
-  - Validators respond asynchronously; the API stores their runs and updates the proof’s status in the background. You can inspect the final state via `GET /api/proofs/:id` and `GET /api/proofs/:id/validators`.
+  - Validators respond asynchronously; the API stores their runs, recomputes the proof’s status, and updates per-validator stats in `validator_stats`. You can inspect the final state via:
+    - `GET /api/proofs/:id`
+    - `GET /api/proofs/:id/validators`
 
 ### Proof Status Logic
 
@@ -307,26 +386,4 @@ Some obvious next steps beyond this v1:
   - Managed integrations for Drive/S3, Slack/Teams, ticketing systems, etc.
 
 This v1 is intentionally simple and heavily commented so that it can serve as a foundation for those future improvements.
-
-
-
-cd /Users/LByron@rccl.com/dev/new-proofmest
-
-# Stop and remove old container (optional but recommended)
-docker rm -f proofmesh-validator-external 2>/dev/null || true
-
-# Rebuild the image
-docker build -t proofmesh-validator -f apps/validator/Dockerfile .
-
-# Run it again with region
-docker run -d --name proofmesh-validator-external \
-  -e VALIDATOR_ID=validator_local_landon \
-  -e VALIDATOR_SECRET=landon-local-secret \
-  -e VALIDATOR_REGION=us-east \
-  -e MQTT_URL=mqtt://146.190.65.80:1883 \
-  -e API_BASE_URL=http://146.190.65.80:3000 \
-  -e SQLITE_PATH=/data/validator.db \
-  -v "$(pwd)/validator-external-data:/data" \
-  proofmesh-validator
-
-
+git pu

@@ -20,6 +20,11 @@ exports.listProofs = listProofs;
 exports.listOrgs = listOrgs;
 exports.listValidators = listValidators;
 exports.listValidatorRuns = listValidatorRuns;
+exports.insertOrgApiKey = insertOrgApiKey;
+exports.listOrgApiKeysForOrg = listOrgApiKeysForOrg;
+exports.revokeOrgApiKey = revokeOrgApiKey;
+exports.findOrgApiKeyByHash = findOrgApiKeyByHash;
+exports.touchOrgApiKeyUsage = touchOrgApiKeyUsage;
 const pg_1 = require("pg");
 const shared_config_1 = require("@proofmesh/shared-config");
 const fs_1 = require("fs");
@@ -226,4 +231,40 @@ async function listValidators() {
 async function listValidatorRuns(limit = 100) {
     const res = await exports.pool.query('SELECT * FROM validator_runs ORDER BY signed_at DESC LIMIT $1', [limit]);
     return res.rows;
+}
+async function insertOrgApiKey(params) {
+    const res = await exports.pool.query(`INSERT INTO org_api_keys (org_id, key_hash, label, scopes, rate_limit_per_minute)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING *`, [
+        params.orgId,
+        params.keyHash,
+        params.label ?? null,
+        params.scopes ?? ['read', 'write'],
+        params.rateLimitPerMinute ?? null,
+    ]);
+    return res.rows[0];
+}
+async function listOrgApiKeysForOrg(orgId) {
+    const res = await exports.pool.query(`SELECT * FROM org_api_keys
+     WHERE org_id = $1
+     ORDER BY created_at DESC`, [orgId]);
+    return res.rows;
+}
+async function revokeOrgApiKey(orgId, id) {
+    const res = await exports.pool.query(`UPDATE org_api_keys
+     SET revoked_at = now()
+     WHERE id = $1 AND org_id = $2 AND revoked_at IS NULL
+     RETURNING *`, [id, orgId]);
+    return res.rows[0] ?? null;
+}
+async function findOrgApiKeyByHash(keyHash) {
+    const res = await exports.pool.query(`SELECT * FROM org_api_keys
+     WHERE key_hash = $1
+       AND revoked_at IS NULL`, [keyHash]);
+    return res.rows[0] ?? null;
+}
+async function touchOrgApiKeyUsage(id) {
+    await exports.pool.query(`UPDATE org_api_keys
+     SET last_used_at = now()
+     WHERE id = $1`, [id]);
 }
