@@ -27,7 +27,9 @@ fastify.addHook('preHandler', async (request, reply) => {
     // Public endpoints that remain open:
     // Use the raw URL so this works reliably in hooks.
     const urlPath = request.raw.url?.split('?')[0] ?? '';
-    if (urlPath === '/api/health' || urlPath === '/api/verify') {
+    if (urlPath === '/api/health' ||
+        urlPath === '/api/verify' ||
+        urlPath === '/api/validators/register') {
         return;
     }
     // 1) Try x-api-key first (server-to-server).

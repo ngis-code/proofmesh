@@ -11,9 +11,10 @@ interface VerifyResponse {
   validators_total: number;
 }
 
-export const VerifyPage: React.FC<{ orgId: string }> = ({ orgId }) => {
+export const PublicVerifyPage: React.FC = () => {
   const api = useApi();
   const [file, setFile] = useState<File | null>(null);
+  const [orgId, setOrgId] = useState('');
   const [hash, setHash] = useState('');
   const [mode, setMode] = useState<Mode>('db_only');
   const [result, setResult] = useState<VerifyResponse | null>(null);
@@ -33,14 +34,17 @@ export const VerifyPage: React.FC<{ orgId: string }> = ({ orgId }) => {
       setError('Please select a file');
       return;
     }
+    if (!orgId.trim()) {
+      setError('Please enter the orgId to verify against');
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
       const h = await computeSha256(file);
       setHash(h);
-      // /api/verify is public; use postPublic.
       const data = await api.postPublic<VerifyResponse>('/api/verify', {
-        orgId,
+        orgId: orgId.trim(),
         hash: h,
         mode,
       });
@@ -53,13 +57,23 @@ export const VerifyPage: React.FC<{ orgId: string }> = ({ orgId }) => {
   };
 
   return (
-    <div className="card">
-      <div className="card-title">
-        <h2>Verify file</h2>
-        <span>Check against known proofs</span>
-      </div>
-      <div className="card-body">
+    <div className="login-layout">
+      <div className="login-card">
+        <h1>Public verify</h1>
+        <p>Anyone can verify a file against a published orgId using the ProofMesh network.</p>
+
         <div className="form">
+          <label htmlFor="orgId">
+            Org ID
+            <input
+              id="orgId"
+              type="text"
+              value={orgId}
+              onChange={(e) => setOrgId(e.target.value)}
+              placeholder="Org UUID (published by the issuer)"
+            />
+          </label>
+
           <label htmlFor="file">
             File
             <input id="file" type="file" onChange={handleFileChange} />
@@ -117,4 +131,5 @@ export const VerifyPage: React.FC<{ orgId: string }> = ({ orgId }) => {
     </div>
   );
 };
+
 

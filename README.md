@@ -28,7 +28,7 @@ The repository is a **pnpm monorepo**:
 
 - `apps/api` – ProofMesh HTTP API (Node + TypeScript, Fastify)
 - `apps/validator` – Validator node (Node + TypeScript, MQTT + SQLite)
-- `apps/web` – Minimal React UI (Vite + TypeScript) for stamping and verifying
+- `apps/web` – SaaS console (React + Vite) for org/admin workflows and stamping/verifying
 - `apps/n8n` – Placeholder docs for n8n workflows
 - `packages/shared-types` – Shared TypeScript interfaces (DB rows, MQTT payloads, etc.)
 - `packages/shared-config` – Shared config helpers and lightweight logger
@@ -102,6 +102,54 @@ This brings up:
 - **n8n UI** (optional): `http://localhost:5678`
 
 Environment configuration is driven by `.env` (see `.env.example` for defaults).
+
+---
+
+## SaaS Console (apps/web)
+
+The `apps/web` project is a small but complete SaaS console that exercises all of the core API features.
+
+### Authentication
+
+- Powered by **Appwrite**:
+  - `VITE_APPWRITE_ENDPOINT` – e.g. `https://nyc.cloud.appwrite.io/v1`
+  - `VITE_APPWRITE_PROJECT_ID` – your Appwrite project ID.
+- Users log in with their **Appwrite email + password**.
+- The console:
+  - Creates an Appwrite session and JWT via the Appwrite JS SDK.
+  - Stores the JWT locally and sends it to the ProofMesh API in:
+    - `Authorization: Bearer <APPWRITE_JWT>` for all protected endpoints.
+
+### Main flows
+
+- **My orgs**
+  - Uses `GET /api/my-orgs` to show only the orgs that the logged-in user belongs to, including their role (`admin` / `viewer`).
+  - Uses `POST /api/orgs` to create new orgs; the creator is automatically made an `admin` in `org_users`.
+
+- **Org dashboard (`/orgs/:orgId`)**
+  - **Overview tab**:
+    - Shows org metadata (name, id, created_at).
+  - **Users tab**:
+    - `GET /api/orgs/:orgId/users` to list Appwrite user IDs and roles (admin-only).
+    - `POST /api/orgs/:orgId/users` to add/update a user’s role in that org.
+    - `POST /api/orgs/:orgId/users/:userId/remove` to remove a user from the org.
+  - **API keys tab**:
+    - `GET /api/orgs/:orgId/api-keys` to list existing keys (scopes, rate limit, last used, revoked).
+    - `POST /api/orgs/:orgId/api-keys` to create a new **org-scoped API key** (shows the raw key once).
+    - `POST /api/orgs/:orgId/api-keys/:id/revoke` to revoke a key.
+  - **Stamp tab**:
+    - Allows file upload; computes SHA-256 in-browser.
+    - Calls `POST /api/stamp` with `{ orgId, hash, artifactType }` using the user’s JWT.
+  - **Verify tab**:
+    - Allows file upload and selection of mode (`db_only` / `db_plus_validators`).
+    - Calls `POST /api/verify` (public endpoint) with `{ orgId, hash, mode }`.
+  - **Proofs tab**:
+    - Uses:
+      - `GET /api/proofs?limit=100`
+      - `GET /api/validator-runs?limit=100`
+    - Shows proofs filtered to the current org (when `orgId` is present) and the latest validator runs.
+
+This console is designed as a reference implementation: real customers can either use it directly or model their own dashboards / SDKs on the same flows and API contracts described below.
 
 ---
 
