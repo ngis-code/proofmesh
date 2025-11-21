@@ -9,6 +9,7 @@ const https_1 = __importDefault(require("https"));
 const cors_1 = __importDefault(require("@fastify/cors"));
 const shared_config_1 = require("@proofmesh/shared-config");
 const db_1 = require("./db");
+const appwriteAdmin_1 = require("./appwriteAdmin");
 const mqttClient_1 = require("./mqttClient");
 const auth_1 = require("./auth");
 const apiKeys_1 = require("./apiKeys");
@@ -429,16 +430,26 @@ fastify.post('/api/orgs/:orgId/users', async (request, reply) => {
         return reply.status(403).send({ error: 'forbidden' });
     }
     const body = request.body;
-    if (!body?.userId) {
-        return reply.status(400).send({ error: 'userId is required' });
+    if (!body?.email || typeof body.email !== 'string' || !body.email.trim()) {
+        return reply.status(400).send({ error: 'email is required' });
     }
     const role = body.role ?? 'viewer';
     const validRoles = new Set(['admin', 'viewer']);
     if (!validRoles.has(role)) {
         return reply.status(400).send({ error: 'invalid_role' });
     }
-    const orgUser = await (0, db_1.upsertOrgUser)({ orgId, userId: body.userId, role });
-    return { user: orgUser };
+    try {
+        const user = await (0, appwriteAdmin_1.ensureAppwriteUserForEmail)(body.email.trim());
+        const orgUser = await (0, db_1.upsertOrgUser)({ orgId, userId: user.$id, role });
+        return { user: orgUser, appwriteUser: { id: user.$id, email: user.email } };
+    }
+    catch (err) {
+        request.log.error({ err }, 'Failed to invite/link Appwrite user');
+        return reply.status(500).send({
+            error: 'invite_failed',
+            message: err?.message ?? 'Unknown error from Appwrite admin client',
+        });
+    }
 });
 fastify.post('/api/orgs/:orgId/users/:userId/remove', async (request, reply) => {
     const { orgId, userId: targetUserId } = request.params;

@@ -11,13 +11,15 @@ interface Org {
   created_at: string;
 }
 
+interface OrgUserRow {
+  org_id: string;
+  user_id: string;
+  role: string;
+  created_at: string;
+}
+
 interface OrgUsersResponse {
-  users: {
-    org_id: string;
-    user_id: string;
-    role: string;
-    created_at: string;
-  }[];
+  users: OrgUserRow[];
 }
 
 interface ApiKeysResponse {
@@ -263,7 +265,7 @@ const OrgUsersTab: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
   const [users, setUsers] = useState<OrgUsersResponse['users']>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [userId, setUserId] = useState('');
+  const [email, setEmail] = useState('');
   const [role, setRole] = useState<'admin' | 'viewer'>('viewer');
 
   const load = async () => {
@@ -286,12 +288,12 @@ const OrgUsersTab: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
 
   const handleAdd = async () => {
     if (!isAdmin) return;
-    if (!orgId || !userId.trim()) return;
+    if (!orgId || !email.trim()) return;
     setLoading(true);
     setError(null);
     try {
-      await api.post(`/api/orgs/${orgId}/users`, { userId: userId.trim(), role });
-      setUserId('');
+      await api.post(`/api/orgs/${orgId}/users`, { email: email.trim(), role });
+      setEmail('');
       await load();
     } catch (err: any) {
       setError(err.message ?? 'Failed to add user');
@@ -323,14 +325,14 @@ const OrgUsersTab: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
         {isAdmin ? (
           <div className="form">
             <div className="form-row">
-              <label htmlFor="userId">
-                Appwrite user ID
+              <label htmlFor="userEmail">
+                User email
                 <input
-                  id="userId"
-                  type="text"
-                  placeholder="Appwrite $id"
-                  value={userId}
-                  onChange={(e) => setUserId(e.target.value)}
+                  id="userEmail"
+                  type="email"
+                  placeholder="user@example.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
                 />
               </label>
               <label htmlFor="role">
@@ -345,13 +347,13 @@ const OrgUsersTab: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
                 </select>
               </label>
             </div>
-            <button type="button" onClick={handleAdd} disabled={loading || !userId.trim()}>
-              Add / update user
+            <button type="button" onClick={handleAdd} disabled={loading || !email.trim()}>
+              Invite / update user
             </button>
           </div>
         ) : (
           <p className="muted">
-            You are a viewer for this org. Only admins can add or remove org users.
+            You are a viewer for this org. Only admins can invite or remove org users.
           </p>
         )}
 

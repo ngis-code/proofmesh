@@ -29,6 +29,7 @@ import {
   deleteOrgUser,
   listOrgsForUser,
 } from './db';
+import { ensureAppwriteUserForEmail } from './appwriteAdmin';
 import { sendStampToValidators, sendVerifyToValidators, waitForResults, getMqttClient } from './mqttClient';
 import { isAuthEnabled, verifyAppwriteJwt, type AuthContext } from './auth';
 import { ApiKeyRateLimitError, verifyApiKey, createApiKeyForOrg } from './apiKeys';
@@ -549,12 +550,12 @@ fastify.post('/api/orgs/:orgId/users', async (request, reply) => {
   }
 
   const body = request.body as {
-    userId: string;
+    email: string;
     role?: string;
   };
 
-  if (!body?.userId) {
-    return reply.status(400).send({ error: 'userId is required' });
+  if (!body?.email || typeof body.email !== 'string' || !body.email.trim()) {
+    return reply.status(400).send({ error: 'email is required' });
   }
 
   const role = body.role ?? 'viewer';
@@ -563,8 +564,17 @@ fastify.post('/api/orgs/:orgId/users', async (request, reply) => {
     return reply.status(400).send({ error: 'invalid_role' });
   }
 
-  const orgUser = await upsertOrgUser({ orgId, userId: body.userId, role });
-  return { user: orgUser };
+  try {
+    const user = await ensureAppwriteUserForEmail(body.email.trim());
+    const orgUser = await upsertOrgUser({ orgId, userId: user.$id, role });
+    return { user: orgUser, appwriteUser: { id: user.$id, email: user.email } };
+  } catch (err: any) {
+    request.log.error({ err }, 'Failed to invite/link Appwrite user');
+    return reply.status(500).send({
+      error: 'invite_failed',
+      message: err?.message ?? 'Unknown error from Appwrite admin client',
+    });
+  }
 });
 
 fastify.post('/api/orgs/:orgId/users/:userId/remove', async (request, reply) => {
