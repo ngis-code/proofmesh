@@ -266,11 +266,12 @@ async function listOrgUsersForOrg(orgId) {
     return res.rows;
 }
 async function upsertOrgUser(params) {
-    const res = await exports.pool.query(`INSERT INTO org_users (org_id, user_id, role)
-     VALUES ($1, $2, $3)
+    const res = await exports.pool.query(`INSERT INTO org_users (org_id, user_id, email, role)
+     VALUES ($1, $2, $3, $4)
      ON CONFLICT (org_id, user_id)
-     DO UPDATE SET role = EXCLUDED.role
-     RETURNING *`, [params.orgId, params.userId, params.role]);
+     DO UPDATE SET role = EXCLUDED.role,
+                   email = EXCLUDED.email
+     RETURNING *`, [params.orgId, params.userId, params.email ?? null, params.role]);
     return res.rows[0];
 }
 async function deleteOrgUser(params) {

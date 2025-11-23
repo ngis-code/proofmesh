@@ -10,9 +10,14 @@ import {
 import { useAuth } from './AuthContext';
 import { OrgDashboard } from './OrgDashboard';
 import { LoginPage } from './LoginPage';
+import { SignupPage } from './SignupPage';
 import { MyOrgsPage } from './MyOrgsPage';
 import { NetworkPage } from './NetworkPage';
 import { PublicVerifyPage } from './PublicVerifyPage';
+import { InviteAcceptPage } from './InviteAcceptPage';
+import { AccountSetupPage } from './AccountSetupPage';
+import { AccountSetupDonePage } from './AccountSetupDonePage';
+import { PasswordResetPage } from './PasswordResetPage';
 
 export const App: React.FC = () => {
   const { user, loading } = useAuth();
@@ -23,7 +28,9 @@ export const App: React.FC = () => {
     !user &&
     !loading &&
     location.pathname !== '/login' &&
-    location.pathname !== '/public/verify'
+    location.pathname !== '/signup' &&
+    location.pathname !== '/public/verify' &&
+    location.pathname !== '/invite'
   ) {
     return <Navigate to="/login" replace />;
   }
@@ -43,7 +50,12 @@ export const App: React.FC = () => {
     return (
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/signup" element={<SignupPage />} />
         <Route path="/public/verify" element={<PublicVerifyPage />} />
+        <Route path="/invite" element={<InviteAcceptPage />} />
+        <Route path="/password/reset" element={<PasswordResetPage />} />
+        <Route path="/account/setup" element={<LoginPage />} />
+        <Route path="/account/setup/done" element={<LoginPage />} />
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     );
@@ -52,7 +64,12 @@ export const App: React.FC = () => {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/signup" element={<SignupPage />} />
       <Route path="/public/verify" element={<PublicVerifyPage />} />
+      <Route path="/invite" element={<InviteAcceptPage />} />
+      <Route path="/account/setup" element={<AccountSetupPage />} />
+      <Route path="/account/setup/done" element={<AccountSetupDonePage />} />
+      <Route path="/password/reset" element={<PasswordResetPage />} />
       <Route element={<SaaSLayout />}>
         <Route path="/network" element={<NetworkPage />} />
         <Route path="/orgs">

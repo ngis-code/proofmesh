@@ -44,6 +44,7 @@ export interface OrgUser {
   id: string;
   org_id: string;
   user_id: string;
+  email: string | null;
   role: string;
   created_at: string;
 }
@@ -390,15 +391,17 @@ export async function listOrgUsersForOrg(orgId: string): Promise<OrgUser[]> {
 export async function upsertOrgUser(params: {
   orgId: string;
   userId: string;
+  email?: string | null;
   role: string;
 }): Promise<OrgUser> {
   const res = await pool.query<OrgUser>(
-    `INSERT INTO org_users (org_id, user_id, role)
-     VALUES ($1, $2, $3)
+    `INSERT INTO org_users (org_id, user_id, email, role)
+     VALUES ($1, $2, $3, $4)
      ON CONFLICT (org_id, user_id)
-     DO UPDATE SET role = EXCLUDED.role
+     DO UPDATE SET role = EXCLUDED.role,
+                   email = EXCLUDED.email
      RETURNING *`,
-    [params.orgId, params.userId, params.role],
+    [params.orgId, params.userId, params.email ?? null, params.role],
   );
   return res.rows[0];
 }
@@ -426,6 +429,29 @@ export async function userHasOrgRole(params: {
     [params.orgId, params.userId, params.roles],
   );
   return res.rows[0]?.exists ?? false;
+}
+
+export async function countOrgAdmins(orgId: string): Promise<number> {
+  const res = await pool.query<{ count: string }>(
+    `SELECT COUNT(*)::STRING AS count
+     FROM org_users
+     WHERE org_id = $1 AND role = 'admin'`,
+    [orgId],
+  );
+  const raw = res.rows[0]?.count ?? '0';
+  return Number(raw);
+}
+
+export async function getOrgOwnerUserId(orgId: string): Promise<string | null> {
+  const res = await pool.query<{ user_id: string }>(
+    `SELECT user_id
+     FROM org_users
+     WHERE org_id = $1 AND role = 'admin'
+     ORDER BY created_at ASC
+     LIMIT 1`,
+    [orgId],
+  );
+  return res.rows[0]?.user_id ?? null;
 }
 
 export async function insertOrgApiKey(params: {
@@ -488,6 +514,45 @@ export async function touchOrgApiKeyUsage(id: string): Promise<void> {
      WHERE id = $1`,
     [id],
   );
+}
+
+export async function countProofsForOrgSince(orgId: string, sinceIso: string): Promise<number> {
+  const res = await pool.query<{ count: string }>(
+    `SELECT COUNT(*)::STRING AS count
+     FROM proofs
+     WHERE org_id = $1
+       AND created_at >= $2`,
+    [orgId, sinceIso],
+  );
+  const raw = res.rows[0]?.count ?? '0';
+  return Number(raw);
+}
+
+// Delete an organization and its related data in a single transaction.
+// CockroachDB is the source of truth; higher layers handle external mirrors
+// like Appwrite billing.
+export async function deleteOrgCascade(orgId: string): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Remove org-scoped relationships first.
+    await client.query('DELETE FROM org_users WHERE org_id = $1', [orgId]);
+    await client.query('DELETE FROM org_api_keys WHERE org_id = $1', [orgId]);
+    // Remove proofs for this org; any validator_runs should either cascade or
+    // be left for a separate clean-up if you decide to keep historical runs.
+    await client.query('DELETE FROM proofs WHERE org_id = $1', [orgId]);
+
+    // Finally, remove the org itself.
+    await client.query('DELETE FROM orgs WHERE id = $1', [orgId]);
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 

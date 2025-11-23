@@ -439,9 +439,19 @@ fastify.post('/api/orgs/:orgId/users', async (request, reply) => {
         return reply.status(400).send({ error: 'invalid_role' });
     }
     try {
-        const user = await (0, appwriteAdmin_1.ensureAppwriteUserForEmail)(body.email.trim());
-        const orgUser = await (0, db_1.upsertOrgUser)({ orgId, userId: user.$id, role });
-        return { user: orgUser, appwriteUser: { id: user.$id, email: user.email } };
+        const invite = await (0, appwriteAdmin_1.createInviteForEmail)(body.email.trim());
+        const orgUser = await (0, db_1.upsertOrgUser)({
+            orgId,
+            userId: invite.user.$id,
+            // Use the requested email as the canonical one we show in the SaaS,
+            // even if Appwrite returns it differently.
+            email: body.email.trim(),
+            role,
+        });
+        return {
+            user: orgUser,
+            appwriteUser: { id: invite.user.$id, email: body.email.trim() },
+        };
     }
     catch (err) {
         request.log.error({ err }, 'Failed to invite/link Appwrite user');

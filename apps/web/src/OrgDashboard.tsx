@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Route, Routes, useNavigate, useParams } from 'react-router-dom';
 import { useApi } from './api';
+import { useAuth } from './AuthContext';
 import { StampPage } from './StampPage';
 import { VerifyPage } from './VerifyPage';
 import { ProofsPage } from './ProofsPage';
@@ -11,15 +12,14 @@ interface Org {
   created_at: string;
 }
 
-interface OrgUserRow {
-  org_id: string;
-  user_id: string;
-  role: string;
-  created_at: string;
-}
-
 interface OrgUsersResponse {
-  users: OrgUserRow[];
+  users: {
+    org_id: string;
+    user_id: string;
+    email: string | null;
+    role: string;
+    created_at: string;
+  }[];
 }
 
 interface ApiKeysResponse {
@@ -261,12 +261,21 @@ export const OrgDashboard: React.FC = () => {
 
 const OrgUsersTab: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
   const api = useApi();
+  const { sendMagicLinkInvite, user: authUser } = useAuth();
   const { orgId } = useParams<{ orgId: string }>();
   const [users, setUsers] = useState<OrgUsersResponse['users']>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<'admin' | 'viewer'>('viewer');
+  const [inviteStatus, setInviteStatus] = useState<string | null>(null);
+  const ownerUserId = React.useMemo(() => {
+    const admins = users.filter((u) => u.role === 'admin');
+    if (admins.length === 0) return null;
+    return admins.reduce((oldest, u) => {
+      return new Date(u.created_at) < new Date(oldest.created_at) ? u : oldest;
+    }).user_id;
+  }, [users]);
 
   const load = async () => {
     if (!orgId) return;
@@ -292,8 +301,22 @@ const OrgUsersTab: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
     setLoading(true);
     setError(null);
     try {
-      await api.post(`/api/orgs/${orgId}/users`, { email: email.trim(), role });
+      const data = await api.post<{
+        user: OrgUsersResponse['users'][number];
+        appwriteUser: { id: string; email: string };
+      }>(`/api/orgs/${orgId}/users`, { email: email.trim(), role });
       setEmail('');
+      try {
+        // Ask Appwrite to send its own magic-link email for this user.
+        await sendMagicLinkInvite(data.appwriteUser.id, data.appwriteUser.email);
+        setInviteStatus(`Invite email sent to ${data.appwriteUser.email}.`);
+      } catch (inviteErr: any) {
+        setInviteStatus(null);
+        setError(
+          inviteErr?.message ??
+            'User was linked to org, but sending the magic-link email failed. Check Appwrite logs.',
+        );
+      }
       await load();
     } catch (err: any) {
       setError(err.message ?? 'Failed to add user');
@@ -307,7 +330,9 @@ const OrgUsersTab: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
     setLoading(true);
     setError(null);
     try {
-      await api.post(`/api/orgs/${orgId}/users/${targetUserId}/remove`);
+      // Send an explicit empty JSON body so Fastify doesn't treat this as
+      // an "empty JSON" error when Content-Type is application/json.
+      await api.post(`/api/orgs/${orgId}/users/${targetUserId}/remove`, {});
       await load();
     } catch (err: any) {
       setError(err.message ?? 'Failed to remove user');
@@ -319,7 +344,7 @@ const OrgUsersTab: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
     <div className="card">
       <div className="card-title">
         <h2>Users & roles</h2>
-        <span>Appwrite user IDs</span>
+        <span>Org members</span>
       </div>
       <div className="card-body">
         {isAdmin ? (
@@ -364,6 +389,12 @@ const OrgUsersTab: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
           </div>
         )}
 
+        {inviteStatus && (
+          <div className="alert success">
+            {inviteStatus}
+          </div>
+        )}
+
         <div className="table-wrapper" style={{ marginTop: '0.75rem' }}>
           {users.length === 0 ? (
             <p className="muted">No users linked to this org yet.</p>
@@ -371,6 +402,7 @@ const OrgUsersTab: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
             <table>
               <thead>
                 <tr>
+                  <th>Email</th>
                   <th>User ID</th>
                   <th>Role</th>
                   <th>Linked at</th>
@@ -378,26 +410,34 @@ const OrgUsersTab: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
                 </tr>
               </thead>
               <tbody>
-                {users.map((u) => (
-                  <tr key={`${u.org_id}-${u.user_id}`}>
-                    <td className="code">{u.user_id}</td>
-                    <td>
-                      <span className="tag">{u.role}</span>
-                    </td>
-                    <td>{new Date(u.created_at).toLocaleString()}</td>
-                    <td>
-                      {isAdmin && (
-                        <button
-                          type="button"
-                          className="btn-secondary"
-                          onClick={() => handleRemove(u.user_id)}
-                        >
-                          Remove
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {users.map((u) => {
+                  const isOwner = ownerUserId != null && u.user_id === ownerUserId;
+                  const isSelf = authUser && authUser.$id === u.user_id;
+                  const canRemove = isAdmin && !isOwner && !isSelf;
+                  const displayEmail =
+                    u.email ?? (isSelf && authUser?.email ? authUser.email : 'unknown');
+                  return (
+                    <tr key={`${u.org_id}-${u.user_id}`}>
+                      <td>{displayEmail}</td>
+                      <td className="code">{u.user_id}</td>
+                      <td>
+                        <span className="tag">{isOwner ? 'owner' : u.role}</span>
+                      </td>
+                      <td>{new Date(u.created_at).toLocaleString()}</td>
+                      <td>
+                        {canRemove && (
+                          <button
+                            type="button"
+                            className="btn-secondary"
+                            onClick={() => handleRemove(u.user_id)}
+                          >
+                            Remove
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}

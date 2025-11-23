@@ -28,8 +28,18 @@ import {
   upsertOrgUser,
   deleteOrgUser,
   listOrgsForUser,
+  countOrgAdmins,
+  getOrgOwnerUserId,
+  deleteOrgCascade,
+  countProofsForOrgSince,
 } from './db';
-import { ensureAppwriteUserForEmail } from './appwriteAdmin';
+import {
+  createInviteForEmail,
+  deleteAppwriteUser,
+  getBillingOrg,
+  upsertBillingOrg,
+  deleteBillingOrg,
+} from './appwriteAdmin';
 import { sendStampToValidators, sendVerifyToValidators, waitForResults, getMqttClient } from './mqttClient';
 import { isAuthEnabled, verifyAppwriteJwt, type AuthContext } from './auth';
 import { ApiKeyRateLimitError, verifyApiKey, createApiKeyForOrg } from './apiKeys';
@@ -45,6 +55,39 @@ const config = loadApiConfig();
 const fastify = Fastify({
   logger: false,
 });
+
+// Simple per-plan limits. -1 means "unlimited".
+const PLAN_LIMITS: Record<
+  string,
+  {
+    maxTeamMembers: number;
+    maxMonthlyOps: number;
+  }
+> = {
+  // Default / legacy / free: very small limits.
+  free: { maxTeamMembers: 1, maxMonthlyOps: 100 },
+  professional: { maxTeamMembers: 10, maxMonthlyOps: 1000 },
+  business: { maxTeamMembers: 50, maxMonthlyOps: 10000 },
+  enterprise: { maxTeamMembers: -1, maxMonthlyOps: -1 },
+};
+
+function resolvePlanFromBilling(billing: any | null) {
+  const planId = (billing && ((billing.plan_id as string | undefined))) || undefined;
+  const status = (billing && ((billing.subscription_status as string | undefined))) || undefined;
+
+  // Explicit plan_id from Stripe metadata.
+  if (planId && PLAN_LIMITS[planId]) {
+    return PLAN_LIMITS[planId];
+  }
+
+  // No subscription yet → treat as free tier.
+  if (!status || status === 'free' || status === 'none') {
+    return PLAN_LIMITS.free;
+  }
+
+  // Fallback: if we don't know the plan, err on the side of generosity.
+  return PLAN_LIMITS.enterprise;
+}
 
 async function registerPlugins() {
   // CORS so the Vite dev server (localhost:5173) can call the API.
@@ -207,6 +250,32 @@ fastify.post('/api/stamp', async (request, reply) => {
 
   if (bodyOrgId && bodyOrgId !== orgId) {
     return reply.status(403).send({ error: 'org_mismatch' });
+  }
+
+  // Enforce per-plan monthly operation limits (stamps + verifications) before
+  // doing any heavier work. We count proofs created for this org since the
+  // start of the current month.
+  try {
+    const billing = await getBillingOrg(orgId);
+    const limits = resolvePlanFromBilling(billing);
+    if (limits.maxMonthlyOps !== -1) {
+      const now = new Date();
+      const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const opsCount = await countProofsForOrgSince(orgId, firstOfMonth.toISOString());
+      if (opsCount >= limits.maxMonthlyOps) {
+        return reply.status(403).send({
+          error: 'LIMIT_REACHED',
+          kind: 'monthly_ops',
+          message: `Monthly verification limit reached (${limits.maxMonthlyOps} operations). Upgrade your plan to continue stamping.`,
+          currentUsage: opsCount,
+          limit: limits.maxMonthlyOps,
+        });
+      }
+    }
+  } catch (err: any) {
+    request.log.error({ err, orgId }, 'Failed to enforce plan limits on stamp');
+    // If billing/limits lookup fails, we allow the stamp to proceed rather
+    // than breaking production usage due to a transient billing outage.
   }
 
   const isFallbackRequest = request.headers['x-proofmesh-stamp-fallback'] === '1';
@@ -490,8 +559,36 @@ fastify.post('/api/orgs', async (request, reply) => {
 
   const org = await insertOrg({ name: body.name.trim() });
 
-  // Make the creator an admin of this org.
-  await upsertOrgUser({ orgId: org.id, userId, role: 'admin' });
+  // Make the creator an admin of this org. We also persist their email
+  // (if present in the Appwrite /account payload) so the SaaS UI can
+  // show a friendly owner row without 'unknown' placeholders.
+  const creatorEmail =
+    request.auth && request.auth.raw && typeof (request.auth.raw as any).email === 'string'
+      ? ((request.auth.raw as any).email as string)
+      : null;
+  await upsertOrgUser({
+    orgId: org.id,
+    userId,
+    email: creatorEmail,
+    role: 'admin',
+  });
+
+  // Mirror this org into Appwrite's billing.organizations collection so that
+  // billing/subscriptions can be managed there while Cockroach remains the
+  // source of truth for org identities.
+  try {
+    await upsertBillingOrg({
+      orgId: org.id,
+      name: org.name,
+      createdByUserId: userId,
+    });
+  } catch (err: any) {
+    request.log.error({ err, orgId: org.id }, 'Failed to upsert billing org in Appwrite');
+    // We do NOT roll back the Cockroach org here because no Stripe subscription
+    // has been created yet, and create-checkout will refuse to start a payment
+    // flow if the billing org row is missing. This keeps subscriptions and
+    // billing rows aligned even if this mirror step fails.
+  }
 
   return { org };
 });
@@ -532,6 +629,150 @@ fastify.get('/api/orgs/:orgId/users', async (request, reply) => {
   return { users };
 });
 
+// Lightweight billing view for an org, sourced from Appwrite's
+// billing.organizations collection. This lets the SaaS UI show plan/
+// subscription state without talking to Appwrite directly.
+fastify.get('/api/orgs/:orgId/billing', async (request, reply) => {
+  const { orgId } = request.params as { orgId: string };
+
+  if (!request.auth || request.auth.via !== 'jwt') {
+    return reply.status(403).send({ error: 'forbidden' });
+  }
+
+  const userId = request.auth.userId;
+  if (!userId) {
+    return reply.status(403).send({ error: 'forbidden' });
+  }
+
+  // Any member of the org can see its billing summary; tighten if needed.
+  const allowed = await userHasOrgRole({ userId, orgId, roles: ['admin', 'viewer'] });
+  if (!allowed) {
+    return reply.status(403).send({ error: 'forbidden' });
+  }
+
+  try {
+    const billing = await getBillingOrg(orgId);
+    if (!billing) {
+      return reply.status(404).send({ error: 'billing_not_found' });
+    }
+    return { billing };
+  } catch (err: any) {
+    request.log.error({ err, orgId }, 'Failed to fetch billing org from Appwrite');
+    return reply.status(500).send({ error: 'billing_lookup_failed' });
+  }
+});
+
+// Per-org usage + limits view: shows current team members and monthly ops
+// against the configured plan caps. This is read-only and can be used by
+// the SaaS UI to show "X of Y used" indicators.
+fastify.get('/api/orgs/:orgId/usage', async (request, reply) => {
+  const { orgId } = request.params as { orgId: string };
+
+  if (!request.auth || request.auth.via !== 'jwt') {
+    return reply.status(403).send({ error: 'forbidden' });
+  }
+
+  const userId = request.auth.userId;
+  if (!userId) {
+    return reply.status(403).send({ error: 'forbidden' });
+  }
+
+  // Any member of the org can see its usage; tighten if you want admin-only.
+  const allowed = await userHasOrgRole({ userId, orgId, roles: ['admin', 'viewer'] });
+  if (!allowed) {
+    return reply.status(403).send({ error: 'forbidden' });
+  }
+
+  try {
+    const billing = await getBillingOrg(orgId);
+    const limits = resolvePlanFromBilling(billing);
+
+    const users = await listOrgUsersForOrg(orgId);
+    const teamCount = users.length;
+
+    const now = new Date();
+    const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const opsCount = await countProofsForOrgSince(orgId, firstOfMonth.toISOString());
+
+    return reply.send({
+      orgId,
+      plan: (billing && (billing as any).plan_id) || 'unknown',
+      subscription_status: billing ? (billing as any).subscription_status : 'free',
+      team: {
+        current: teamCount,
+        limit: limits.maxTeamMembers,
+      },
+      monthly_ops: {
+        current: opsCount,
+        limit: limits.maxMonthlyOps,
+        period_start: firstOfMonth.toISOString(),
+        period_end: now.toISOString(),
+      },
+    });
+  } catch (err: any) {
+    request.log.error({ err, orgId }, 'Failed to compute org usage');
+    return reply.status(500).send({ error: 'usage_lookup_failed' });
+  }
+});
+
+// Delete an organization entirely. CockroachDB is the source of truth; we
+// delete its org + related rows in a transaction and then attempt to clean
+// up the mirrored billing document in Appwrite. Only org admins may delete.
+fastify.post('/api/orgs/:orgId/delete', async (request, reply) => {
+  const { orgId } = request.params as { orgId: string };
+
+  if (!request.auth || request.auth.via !== 'jwt') {
+    return reply.status(403).send({ error: 'forbidden' });
+  }
+
+  const userId = request.auth.userId;
+  if (!userId) {
+    return reply.status(403).send({ error: 'forbidden' });
+  }
+
+  // Require admin role in this org to delete it.
+  const allowed = await userHasOrgRole({ userId, orgId, roles: ['admin'] });
+  if (!allowed) {
+    return reply.status(403).send({ error: 'unauthorized', message: 'Only admins can delete organizations' });
+  }
+
+  // If billing is configured and this org still has an active subscription,
+  // force the user to cancel via Stripe portal first.
+  try {
+    const billing = await getBillingOrg(orgId);
+    if (billing && billing.subscription_status === 'active') {
+      return reply.status(400).send({
+        error: 'org_has_active_subscription',
+        message: 'Cancel the Stripe subscription first via the Manage Subscription portal before deleting this organization.',
+      });
+    }
+  } catch (err: any) {
+    request.log.error({ err, orgId }, 'Failed to check billing status before delete');
+    // If billing lookup fails, we err on the side of safety and still block delete.
+    return reply.status(500).send({
+      error: 'billing_check_failed',
+      message: 'Unable to verify subscription status; please try again later.',
+    });
+  }
+
+  try {
+    await deleteOrgCascade(orgId);
+  } catch (err: any) {
+    request.log.error({ err, orgId }, 'Failed to delete org in Cockroach');
+    return reply.status(500).send({ error: 'delete_failed', message: err?.message ?? 'Failed to delete org' });
+  }
+
+  // Best-effort clean-up of the mirrored billing document in Appwrite. If this
+  // fails we still treat the delete as successful since Cockroach is canonical.
+  try {
+    await deleteBillingOrg(orgId);
+  } catch (err: any) {
+    request.log.error({ err, orgId }, 'Failed to delete billing org in Appwrite');
+  }
+
+  return reply.send({ success: true, message: 'Organization deleted successfully' });
+});
+
 fastify.post('/api/orgs/:orgId/users', async (request, reply) => {
   const { orgId } = request.params as { orgId: string };
 
@@ -547,6 +788,28 @@ fastify.post('/api/orgs/:orgId/users', async (request, reply) => {
   const allowed = await userHasOrgRole({ userId, orgId, roles: ['admin'] });
   if (!allowed) {
     return reply.status(403).send({ error: 'forbidden' });
+  }
+
+  // Enforce per-plan team member limits before inviting/adding another user.
+  try {
+    const billing = await getBillingOrg(orgId);
+    const limits = resolvePlanFromBilling(billing);
+    if (limits.maxTeamMembers !== -1) {
+      const users = await listOrgUsersForOrg(orgId);
+      if (users.length >= limits.maxTeamMembers) {
+        return reply.status(403).send({
+          error: 'LIMIT_REACHED',
+          kind: 'team_members',
+          message: `Team member limit reached (${limits.maxTeamMembers}). Upgrade your plan to add more users.`,
+          currentUsage: users.length,
+          limit: limits.maxTeamMembers,
+        });
+      }
+    }
+  } catch (err: any) {
+    request.log.error({ err, orgId }, 'Failed to enforce plan limits on org user add');
+    // If billing/limits lookup fails, we allow the add to proceed rather
+    // than breaking org management due to a transient billing outage.
   }
 
   const body = request.body as {
@@ -565,9 +828,19 @@ fastify.post('/api/orgs/:orgId/users', async (request, reply) => {
   }
 
   try {
-    const user = await ensureAppwriteUserForEmail(body.email.trim());
-    const orgUser = await upsertOrgUser({ orgId, userId: user.$id, role });
-    return { user: orgUser, appwriteUser: { id: user.$id, email: user.email } };
+    const invite = await createInviteForEmail(body.email.trim());
+    const orgUser = await upsertOrgUser({
+      orgId,
+      userId: invite.user.$id,
+      // Use the requested email as the canonical one we show in the SaaS,
+      // even if Appwrite returns it differently.
+      email: body.email.trim(),
+      role,
+    });
+    return {
+      user: orgUser,
+      appwriteUser: { id: invite.user.$id, email: body.email.trim() },
+    };
   } catch (err: any) {
     request.log.error({ err }, 'Failed to invite/link Appwrite user');
     return reply.status(500).send({
@@ -584,17 +857,49 @@ fastify.post('/api/orgs/:orgId/users/:userId/remove', async (request, reply) => 
     return reply.status(403).send({ error: 'forbidden' });
   }
 
-  const userId = request.auth.userId;
-  if (!userId) {
+  // Only org admins should be allowed to remove users.
+  const currentUserId = request.auth.userId;
+  if (!currentUserId) {
     return reply.status(403).send({ error: 'forbidden' });
   }
 
-  const allowed = await userHasOrgRole({ userId, orgId, roles: ['admin'] });
+  const allowed = await userHasOrgRole({ userId: currentUserId, orgId, roles: ['admin'] });
   if (!allowed) {
     return reply.status(403).send({ error: 'forbidden' });
   }
 
+  // Determine the canonical owner for this org: the earliest admin row.
+  const ownerUserId = await getOrgOwnerUserId(orgId);
+
+  // Prevent users from deleting themselves from an org.
+  if (currentUserId === targetUserId) {
+    return reply.status(400).send({ error: 'cannot_delete_self' });
+  }
+
+  // Prevent deleting the owner (no one, including themselves, can remove owner).
+  if (ownerUserId && targetUserId === ownerUserId) {
+    return reply.status(400).send({ error: 'cannot_delete_owner' });
+  }
+
+  // Prevent deleting the last remaining admin for an org.
+  const targetIsAdmin = await userHasOrgRole({ userId: targetUserId, orgId, roles: ['admin'] });
+  if (targetIsAdmin) {
+    const adminCount = await countOrgAdmins(orgId);
+    if (adminCount <= 1) {
+      return reply.status(400).send({ error: 'cannot_delete_last_admin' });
+    }
+  }
+
   await deleteOrgUser({ orgId, userId: targetUserId });
+
+  // Also delete the underlying Appwrite user so their JWTs / sessions become invalid.
+  // If this fails (e.g., user already deleted), we still consider the org removal successful.
+  try {
+    await deleteAppwriteUser(targetUserId);
+  } catch (err) {
+    request.log.error({ err, targetUserId }, 'Failed to delete Appwrite user for org removal');
+  }
+
   return { ok: true };
 });
 

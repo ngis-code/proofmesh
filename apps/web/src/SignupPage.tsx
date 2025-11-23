@@ -2,31 +2,49 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from './AuthContext';
 
-export const LoginPage: React.FC = () => {
-  const { login, loading } = useAuth();
+export const SignupPage: React.FC = () => {
+  const { signup, loading } = useAuth();
   const navigate = useNavigate();
+  const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [passwordConfirm, setPasswordConfirm] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    if (password !== passwordConfirm) {
+      setError('Passwords do not match.');
+      return;
+    }
     try {
-      await login(email, password);
+      await signup(name, email, password);
       navigate('/orgs');
     } catch (err: any) {
-      setError('Login failed. Check your credentials.');
+      setError(err.message ?? 'Signup failed.');
     }
   };
 
   return (
     <div className="login-layout">
       <div className="login-card">
-        <h1>Sign in to ProofMesh</h1>
-        <p>Use your Appwrite email and password to access your orgs.</p>
+        <h1>Create your ProofMesh account</h1>
+        <p>Sign up to create your first org and become its owner.</p>
 
         <form className="form" onSubmit={handleSubmit}>
+          <label htmlFor="name">
+            Name
+            <input
+              id="name"
+              type="text"
+              autoComplete="name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Your name"
+            />
+          </label>
+
           <label htmlFor="email">
             Email
             <input
@@ -44,15 +62,27 @@ export const LoginPage: React.FC = () => {
             <input
               id="password"
               type="password"
-              autoComplete="current-password"
+              autoComplete="new-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
+              placeholder="At least 8 characters"
+            />
+          </label>
+
+          <label htmlFor="passwordConfirm">
+            Confirm password
+            <input
+              id="passwordConfirm"
+              type="password"
+              autoComplete="new-password"
+              value={passwordConfirm}
+              onChange={(e) => setPasswordConfirm(e.target.value)}
+              placeholder="Repeat password"
             />
           </label>
 
           <button type="submit" disabled={loading}>
-            {loading ? 'Signing in…' : 'Sign in'}
+            {loading ? 'Creating account…' : 'Sign up'}
           </button>
         </form>
 
@@ -62,20 +92,6 @@ export const LoginPage: React.FC = () => {
             {error}
           </div>
         )}
-
-        <div className="login-footer">
-          <span>
-            Don&apos;t have an account?
-            {' '}
-            <button
-              type="button"
-              className="link-button"
-              onClick={() => navigate('/signup')}
-            >
-              Sign up
-            </button>
-          </span>
-        </div>
       </div>
     </div>
   );
