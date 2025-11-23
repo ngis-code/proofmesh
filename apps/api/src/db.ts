@@ -190,13 +190,40 @@ export async function insertProof(params: {
   artifactId?: string | null;
   versionOf?: string | null;
 }): Promise<Proof> {
-  const res = await pool.query<Proof>(
-    `INSERT INTO proofs (org_id, hash, artifact_type, artifact_id, version_of)
-     VALUES ($1, $2, $3, $4, $5)
-     RETURNING *`,
-    [params.orgId, params.hash, params.artifactType, params.artifactId ?? null, params.versionOf ?? null],
-  );
-  return res.rows[0];
+  // Idempotent insert: rely on a unique index over the logical key
+  // (org_id, hash, artifact_type, artifact_id, version_of). If another
+  // concurrent request has already inserted the same proof, we fall back
+  // to selecting and returning the existing row instead of throwing.
+  try {
+    const res = await pool.query<Proof>(
+      `INSERT INTO proofs (org_id, hash, artifact_type, artifact_id, version_of)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [params.orgId, params.hash, params.artifactType, params.artifactId ?? null, params.versionOf ?? null],
+    );
+    return res.rows[0];
+  } catch (err: any) {
+    // Cockroach / Postgres unique violation.
+    if (err && err.code === '23505') {
+      const res = await pool.query<Proof>(
+        `SELECT *
+         FROM proofs
+         WHERE org_id = $1
+           AND hash = $2
+           AND artifact_type = $3
+           AND artifact_id IS NOT DISTINCT FROM $4
+           AND version_of IS NOT DISTINCT FROM $5
+         ORDER BY created_at DESC
+         LIMIT 1`,
+        [params.orgId, params.hash, params.artifactType, params.artifactId ?? null, params.versionOf ?? null],
+      );
+      if (!res.rows[0]) {
+        throw err;
+      }
+      return res.rows[0];
+    }
+    throw err;
+  }
 }
 
 export async function findLatestProofByOrgAndArtifact(orgId: string, artifactId: string): Promise<Proof | null> {

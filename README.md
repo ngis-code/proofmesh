@@ -501,3 +501,34 @@ Some obvious next steps beyond this v1:
   - Managed integrations for Drive/S3, Slack/Teams, ticketing systems, etc.
 
 This v1 is intentionally simple and heavily commented so that it can serve as a foundation for those future improvements.
+
+
+
+
+docker run -d \
+  --name proofmesh-validator-5 \
+  -e VALIDATOR_ID=validator-5 \
+  -e VALIDATOR_SECRET=super-secret-5 \
+  -e MQTT_URL=mqtt://host.docker.internal:1883 \
+  -e API_BASE_URL=http://host.docker.internal:3000 \
+  -e VALIDATOR_REGION=us-east \
+  -e SQLITE_PATH=/data/validator.db \
+  -v /tmp/proofmesh-validator-5:/data \
+    infra-validator1:latest
+
+    docker run -d \
+  --name proofmesh-validator-7 \
+  -e VALIDATOR_ID=validator-7 \
+  -e VALIDATOR_SECRET=super-secret-7 \
+  -e MQTT_URL=mqtt://host.docker.internal:1883 \
+  -e API_BASE_URL=http://host.docker.internal:3000 \
+  -e VALIDATOR_REGION=us-east \
+  -e SQLITE_PATH=/data/validator.db \
+  -v /tmp/proofmesh-validator-7:/data \
+    infra-validator1:latest
+
+
+    INSERT INTO validators (id, name, region, api_key_hash, enabled, created_at, online, last_seen_at)
+VALUES
+  ('validator-4', 'validator-4', 'us-east', 'super-secret-4', true, now(), false, NULL),
+  ('validator-5', 'validator-5', 'us-east', 'super-secret-5', true, now(), false, NULL);

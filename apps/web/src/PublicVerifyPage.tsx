@@ -4,11 +4,22 @@ import { useApi } from './api';
 
 type Mode = 'db_only' | 'db_plus_validators';
 
+interface ProofSummary {
+  id: string;
+  hash: string;
+  artifact_type: string;
+  artifact_id: string | null;
+  version_of: string | null;
+  status: string;
+  created_at: string;
+}
+
 interface VerifyResponse {
   mode: Mode;
   status: 'valid' | 'unknown' | 'tampered' | 'low_confidence';
   validators_confirmed: number;
   validators_total: number;
+  proofs?: ProofSummary[];
 }
 
 export const PublicVerifyPage: React.FC = () => {
@@ -48,6 +59,24 @@ export const PublicVerifyPage: React.FC = () => {
         hash: h,
         mode,
       });
+      if (data.proofs && data.proofs.length > 1) {
+        const seen = new Map<string, ProofSummary>();
+        for (const p of data.proofs) {
+          const key = [
+            p.hash,
+            p.artifact_type,
+            p.artifact_id ?? '',
+            p.version_of ?? '',
+          ].join('|');
+          const existing = seen.get(key);
+          if (!existing) {
+            seen.set(key, p);
+          } else if (new Date(p.created_at).getTime() > new Date(existing.created_at).getTime()) {
+            seen.set(key, p);
+          }
+        }
+        data.proofs = Array.from(seen.values());
+      }
       setResult(data);
     } catch (err: any) {
       setError(err.message ?? 'Verify failed');
@@ -125,6 +154,25 @@ export const PublicVerifyPage: React.FC = () => {
               /
               {result.validators_total}
             </p>
+            {result.proofs && result.proofs.length > 0 && (
+              <div className="mt-2">
+                <strong>Matching proofs:</strong>
+                <ul>
+                  {result.proofs.map((p) => (
+                    <li key={p.id}>
+                      <span className="code">{p.id}</span>
+                      {' '}
+                      (
+                      {p.status}
+                      , created
+                      {' '}
+                      {new Date(p.created_at).toLocaleString()}
+                      )
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         )}
       </div>
