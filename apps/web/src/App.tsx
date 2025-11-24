@@ -1,147 +1,71 @@
-import React from 'react';
-import {
-  Navigate,
-  Outlet,
-  Route,
-  Routes,
-  useLocation,
-  useNavigate,
-} from 'react-router-dom';
-import { useAuth } from './AuthContext';
-import { OrgDashboard } from './OrgDashboard';
-import { LoginPage } from './LoginPage';
-import { SignupPage } from './SignupPage';
-import { MyOrgsPage } from './MyOrgsPage';
-import { NetworkPage } from './NetworkPage';
-import { PublicVerifyPage } from './PublicVerifyPage';
-import { InviteAcceptPage } from './InviteAcceptPage';
-import { AccountSetupPage } from './AccountSetupPage';
-import { AccountSetupDonePage } from './AccountSetupDonePage';
-import { PasswordResetPage } from './PasswordResetPage';
+import { Toaster } from "@/components/ui/toaster";
+import { Toaster as Sonner } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { AuthProvider, useAuth } from "@/contexts/AuthContext";
+import AppLayout from "@/components/AppLayout";
+import Login from "./pages/Login";
+import Signup from "./pages/Signup";
+import AccountSetup from "./pages/AccountSetup";
+import AccountSetupDone from "./pages/AccountSetupDone";
+import InviteAccept from "./pages/InviteAccept";
+import PasswordReset from "./pages/PasswordReset";
+import MyOrgs from "./pages/MyOrgs";
+import Network from "./pages/Network";
+import OrgDashboard from "./pages/OrgDashboard";
+import PublicVerify from "./pages/PublicVerify";
+import PricingPlans from "./pages/PricingPlans";
+import CreateOrg from "./pages/CreateOrg";
+import NotFound from "./pages/NotFound";
 
-export const App: React.FC = () => {
+const queryClient = new QueryClient();
+
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
-  const location = useLocation();
-
-  // Public login route
-  if (
-    !user &&
-    !loading &&
-    location.pathname !== '/login' &&
-    location.pathname !== '/signup' &&
-    location.pathname !== '/public/verify' &&
-    location.pathname !== '/invite'
-  ) {
-    return <Navigate to="/login" replace />;
-  }
 
   if (loading) {
-    return (
-      <div className="login-layout">
-        <div className="login-card">
-          <h1>Loading ProofMesh…</h1>
-          <p>Checking your session.</p>
-        </div>
-      </div>
-    );
+    return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
   }
 
   if (!user) {
-    return (
-      <Routes>
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/signup" element={<SignupPage />} />
-        <Route path="/public/verify" element={<PublicVerifyPage />} />
-        <Route path="/invite" element={<InviteAcceptPage />} />
-        <Route path="/password/reset" element={<PasswordResetPage />} />
-        <Route path="/account/setup" element={<LoginPage />} />
-        <Route path="/account/setup/done" element={<LoginPage />} />
-        <Route path="*" element={<Navigate to="/login" replace />} />
-      </Routes>
-    );
+    return <Navigate to="/login" replace />;
   }
 
-  return (
-    <Routes>
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/signup" element={<SignupPage />} />
-      <Route path="/public/verify" element={<PublicVerifyPage />} />
-      <Route path="/invite" element={<InviteAcceptPage />} />
-      <Route path="/account/setup" element={<AccountSetupPage />} />
-      <Route path="/account/setup/done" element={<AccountSetupDonePage />} />
-      <Route path="/password/reset" element={<PasswordResetPage />} />
-      <Route element={<SaaSLayout />}>
-        <Route path="/network" element={<NetworkPage />} />
-        <Route path="/orgs">
-          <Route index element={<MyOrgsPage />} />
-          <Route path=":orgId/*" element={<OrgDashboard />} />
-        </Route>
-      </Route>
-      <Route path="/" element={<Navigate to="/orgs" replace />} />
-      <Route path="*" element={<Navigate to="/orgs" replace />} />
-    </Routes>
-  );
-};
+  return <>{children}</>;
+}
 
-const SaaSLayout: React.FC = () => {
-  const { user, logout } = useAuth();
-  const navigate = useNavigate();
-  const location = useLocation();
-  return (
-    <div className="app-root">
-      <aside className="sidebar">
-        <div className="sidebar-logo">
-          <div className="sidebar-logo-mark">P</div>
-          <div className="sidebar-logo-text">
-            <span>ProofMesh</span>
-            <span>Digital integrity mesh</span>
-          </div>
-        </div>
+const App = () => (
+  <QueryClientProvider client={queryClient}>
+    <TooltipProvider>
+      <Toaster />
+      <Sonner />
+      <BrowserRouter>
+        <AuthProvider>
+          <Routes>
+            <Route path="/login" element={<Login />} />
+            <Route path="/signup" element={<Signup />} />
+            <Route path="/verify" element={<PublicVerify />} />
+            <Route path="/invite" element={<InviteAccept />} />
+            <Route path="/password/reset" element={<PasswordReset />} />
+            <Route path="/pricing" element={<PricingPlans />} />
+            <Route path="/create-org" element={<ProtectedRoute><CreateOrg /></ProtectedRoute>} />
+            <Route path="/account/setup" element={<ProtectedRoute><AccountSetup /></ProtectedRoute>} />
+            <Route path="/account/setup/done" element={<ProtectedRoute><AccountSetupDone /></ProtectedRoute>} />
+            
+            <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
+              <Route path="/orgs" element={<MyOrgs />} />
+              <Route path="/orgs/:orgId/*" element={<OrgDashboard />} />
+              <Route path="/network" element={<Network />} />
+            </Route>
 
-        <div>
-          <div className="sidebar-section-title">Navigation</div>
-          <div className="sidebar-nav">
-            <button
-              type="button"
-              className={
-                location.pathname.startsWith('/orgs') && !location.pathname.match(/\/orgs\/[^/]+/)
-                  ? 'sidebar-link active'
-                  : 'sidebar-link'
-              }
-              onClick={() => navigate('/orgs')}
-            >
-              My orgs
-            </button>
-            <button
-              type="button"
-              className={location.pathname.startsWith('/network') ? 'sidebar-link active' : 'sidebar-link'}
-              onClick={() => navigate('/network')}
-            >
-              Network health
-            </button>
-          </div>
-        </div>
+            <Route path="/" element={<Navigate to="/orgs" replace />} />
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </AuthProvider>
+      </BrowserRouter>
+    </TooltipProvider>
+  </QueryClientProvider>
+);
 
-        <div className="sidebar-footer">
-          <div className="sidebar-user">
-            <span className="sidebar-user-email">{user.email}</span>
-            <button
-              type="button"
-              className="sidebar-logout-btn"
-              onClick={() => {
-                void logout().then(() => navigate('/login'));
-              }}
-            >
-              Logout
-            </button>
-          </div>
-          <div className="muted">Signed in via Appwrite</div>
-        </div>
-      </aside>
-
-      <main className="main">
-        <Outlet />
-      </main>
-    </div>
-  );
-};
+export default App;
