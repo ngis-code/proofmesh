@@ -50,15 +50,26 @@ npm install @radix-ui/react-dialog @radix-ui/react-select @radix-ui/react-switch
 npx tailwindcss init -p
 ```
 
-## Step 3: Copy ProofMesh Code
+## Step 3: Wire in ProofMesh Code
 
 From this Lovable project, copy:
 1. **`/src/desktop-app/`** → `/src/` (all React components)
-2. **`/src/lib/sdk/proofmesh-sdk.ts`** → `/src/lib/` (SDK)
-3. **`/src/lib/desktop/`** → `/src/lib/desktop/` (core modules)
-4. **`vite.config.ts`** → root (Vite config)
-5. **`tailwind.config.ts`** → root (Tailwind config)
-6. **`src/index.css`** → `/src/` (styles)
+2. **`/src/lib/desktop/`** → `/src/lib/desktop/` (core modules)
+3. **`vite.config.ts`** → root (Vite config)
+4. **`tailwind.config.ts`** → root (Tailwind config)
+5. **`src/index.css`** → `/src/` (styles)
+
+Then install the official SDK:
+
+```bash
+npm install @proofmesh/sdk
+```
+
+In a pnpm monorepo like this one, you can instead depend on the local package:
+
+```bash
+pnpm add @proofmesh/sdk
+```
 
 ## Step 4: Configure Tauri
 

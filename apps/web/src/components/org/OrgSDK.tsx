@@ -8,65 +8,107 @@ interface OrgSDKProps {
 const getCodeExamples = (orgId: string, apiKey: string) => ({
   javascript: {
     install: `npm install @proofmesh/sdk`,
-    usage: `import { ProofMesh } from '@proofmesh/sdk';
+    init: `import { ProofMesh } from '@proofmesh/sdk';
 
 const client = new ProofMesh({
   apiKey: '${apiKey}',
-  orgId: '${orgId}'
-});
-
-// Create a proof
-const proof = await client.stamp({
+  orgId: '${orgId}',
+  // Optional: override for local dev / self-hosted
+  // baseUrl: 'http://localhost:3000',
+});`,
+    stamp: `// 1) Create a proof from a File or Blob
+const stamp = await client.stamp({
   file: fileBlob,
   artifactType: 'document',
-  artifactId: 'invoice-2024-001'
+  artifactId: 'invoice-2024-001',
 });
 
-console.log('Hash:', proof.hash);
-console.log('Proof ID:', proof.id);`,
-    verify: `// Verify a proof
+console.log('Hash:', stamp.proof.hash);
+console.log('Proof ID:', stamp.proof.id);`,
+    verify: `// 2) Verify later by hash (fast DB-only check)
 const verification = await client.verify({
-  hash: 'SHA256:abc123...'
+  hash: stamp.proof.hash,
+  // mode: 'db_plus_validators', // uncomment to ask live validators as well
+});
+
+console.log('Valid:', verification.isValid);
+console.log('Verified by:', verification.validatorCount, 'validators');`,
+    verifyFile: `// 3) Or verify directly from a file (no manual hashing)
+const fileCheck = await client.verifyFile({
+  file: fileBlob,
+  mode: 'db_plus_validators',
+});
+
+console.log('File is valid:', fileCheck.isValid);`,
+    listProofs: `// List recent proofs for this org
+const { proofs } = await client.listProofs(50);
+
+proofs.forEach((proof) => {
+  console.log(\`\${proof.artifactId}: \${proof.hash}\`);
+});`,
+    quickStart: `import { ProofMesh } from '@proofmesh/sdk';
+
+const client = new ProofMesh({
+  apiKey: '${apiKey}',
+  orgId: '${orgId}',
+  // Optional: override for local dev / self-hosted
+  // baseUrl: 'http://localhost:3000',
+});
+
+// 1) Create a proof from a File or Blob
+const stamp = await client.stamp({
+  file: fileBlob,
+  artifactType: 'document',
+  artifactId: 'invoice-2024-001',
+});
+
+console.log('Hash:', stamp.proof.hash);
+console.log('Proof ID:', stamp.proof.id);
+
+// 2) Verify later by hash (fast DB-only check)
+const verification = await client.verify({
+  hash: stamp.proof.hash,
+  // mode: 'db_plus_validators', // uncomment to ask live validators as well
 });
 
 console.log('Valid:', verification.isValid);
 console.log('Verified by:', verification.validatorCount, 'validators');
 
-// Public verification (no auth needed)
-const publicCheck = await client.publicVerify('SHA256:abc123...');
-console.log('Publicly valid:', publicCheck.isValid);`,
-    listProofs: `// List all proofs
-const { proofs } = await client.listProofs(50);
+// 3) Or verify directly from a file (no manual hashing)
+const fileCheck = await client.verifyFile({
+  file: fileBlob,
+  mode: 'db_plus_validators',
+});
 
-proofs.forEach(proof => {
-  console.log(\`\${proof.artifactId}: \${proof.hash}\`);
-});`
+console.log('File is valid:', fileCheck.isValid);`
   },
   curl: {
-    stamp: `# Stamp a file to create a verifiable proof
-curl -X POST https://your-api.proofmesh.com/api/stamp \\
-  -H "Authorization: Bearer ${apiKey}" \\
-  -H "X-Org-ID: ${orgId}" \\
-  -F "file=@document.pdf" \\
-  -F "artifactType=document" \\
-  -F "artifactId=invoice-2024-001"`,
-    verify: `# Verify a proof
-curl -X POST https://your-api.proofmesh.com/api/verify \\
-  -H "Authorization: Bearer ${apiKey}" \\
+    stamp: `# Stamp a hash for your org using an API key
+curl -X POST https://api.proofmesh.com/api/stamp \\
+  -H "x-api-key: ${apiKey}" \\
   -H "Content-Type: application/json" \\
   -d '{
     "hash": "SHA256:abc123...",
-    "orgId": "${orgId}"
+    "artifactType": "document",
+    "artifactId": "invoice-2024-001"
   }'`,
-    publicVerify: `# Public verification (no auth required)
-curl -X POST https://your-api.proofmesh.com/api/public-verify \\
+    verify: `# Verify a proof by hash (public endpoint)
+curl -X POST https://api.proofmesh.com/api/verify \\
   -H "Content-Type: application/json" \\
   -d '{
-    "hash": "SHA256:abc123..."
+    "hash": "SHA256:abc123...",
+    "mode": "db_only"
   }'`,
-    listProofs: `# List all proofs
-curl -X GET "https://your-api.proofmesh.com/api/proofs?limit=50" \\
-  -H "Authorization: Bearer ${apiKey}"`
+    publicVerify: `# Public verification (no auth required, db + optional validators)
+curl -X POST https://api.proofmesh.com/api/verify \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "hash": "SHA256:abc123...",
+    "mode": "db_plus_validators"
+  }'`,
+    listProofs: `# List all proofs for your org using an API key
+curl -X GET "https://api.proofmesh.com/api/proofs?limit=50" \\
+  -H "x-api-key: ${apiKey}"`
   }
 });
 
@@ -76,6 +118,7 @@ export default function OrgSDK({ orgId }: OrgSDKProps) {
   
   const apiKey = 'your-api-key-here'; // This will be replaced with actual key from API Keys page
   const codeExamples = getCodeExamples(orgId, apiKey);
+  const currentCode: Record<string, string> = codeExamples[language] as Record<string, string>;
 
   const copyToClipboard = (code: string, id: string) => {
     navigator.clipboard.writeText(code);
@@ -165,7 +208,7 @@ export default function OrgSDK({ orgId }: OrgSDKProps) {
           </div>
 
           {/* Installation */}
-          {'install' in codeExamples[language] && (
+          {'install' in currentCode && (
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-base font-semibold flex items-center gap-2">
@@ -175,7 +218,7 @@ export default function OrgSDK({ orgId }: OrgSDKProps) {
                   Installation
                 </h3>
                 <button
-                  onClick={() => copyToClipboard((codeExamples[language] as any).install, 'install')}
+                  onClick={() => copyToClipboard(currentCode.install, 'install')}
                   className="btn-secondary text-sm flex items-center gap-2 px-4 py-2"
                 >
                   {copiedCode === 'install' ? (
@@ -194,26 +237,31 @@ export default function OrgSDK({ orgId }: OrgSDKProps) {
               <div className="relative group">
                 <div className="absolute -inset-1 bg-gradient-to-r from-[#0ea5e9] to-[#22c55e] rounded-xl opacity-20 blur group-hover:opacity-40 transition"></div>
                 <pre className="relative bg-[#020617] border border-[#1f2937] rounded-xl p-6 overflow-x-auto">
-                  <code className="text-sm text-[#22c55e] font-mono">{(codeExamples[language] as any).install}</code>
+                  <code className="text-sm text-[#22c55e] font-mono">{currentCode.install}</code>
                 </pre>
               </div>
             </div>
           )}
 
-          {/* Usage/Stamp Example */}
+          {/* Usage / Quick Start */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-semibold flex items-center gap-2">
                 <div className="w-6 h-6 rounded-md bg-[#0ea5e9] flex items-center justify-center">
                   <span className="text-[#020617] text-xs font-bold">2</span>
                 </div>
-                {language === 'javascript' ? 'Quick Start' : 'Create a Proof'}
+                {language === 'javascript' ? 'Quick Start (Copy & Paste)' : 'Create a Proof'}
               </h3>
               <button
-                onClick={() => copyToClipboard((codeExamples[language] as any)[language === 'javascript' ? 'usage' : 'stamp'], language === 'javascript' ? 'usage' : 'stamp')}
+                onClick={() =>
+                  copyToClipboard(
+                    language === 'javascript' ? currentCode.quickStart : currentCode.stamp,
+                    language === 'javascript' ? 'quickStart' : 'stamp'
+                  )
+                }
                 className="btn-secondary text-sm flex items-center gap-2 px-4 py-2"
               >
-                {copiedCode === (language === 'javascript' ? 'usage' : 'stamp') ? (
+                {copiedCode === (language === 'javascript' ? 'quickStart' : 'stamp') ? (
                   <>
                     <Check className="w-4 h-4" />
                     Copied!
@@ -226,16 +274,68 @@ export default function OrgSDK({ orgId }: OrgSDKProps) {
                 )}
               </button>
             </div>
+
             <div className="relative group">
               <div className="absolute -inset-1 bg-gradient-to-r from-[#0ea5e9] to-[#22c55e] rounded-xl opacity-20 blur group-hover:opacity-40 transition"></div>
-              <pre className="relative bg-[#020617] border border-[#1f2937] rounded-xl p-6 overflow-x-auto">
-                <code className="text-sm text-[#e5e7eb] font-mono leading-relaxed">{(codeExamples[language] as any)[language === 'javascript' ? 'usage' : 'stamp']}</code>
-              </pre>
+
+              {language === 'javascript' ? (
+                <div className="relative bg-[#020617] border border-[#1f2937] rounded-xl p-6 space-y-5">
+                  <div className="space-y-2">
+                    <p className="text-xs font-semibold text-[#9ca3af] uppercase tracking-wide">
+                      Step 1 – Initialize the client
+                    </p>
+                    <pre className="bg-black/40 rounded-lg p-4 overflow-x-auto">
+                      <code className="text-sm text-[#e5e7eb] font-mono leading-relaxed">
+                        {currentCode.init}
+                      </code>
+                    </pre>
+                  </div>
+
+                  <div className="space-y-2">
+                    <p className="text-xs font-semibold text-[#9ca3af] uppercase tracking-wide">
+                      Step 2 – Create a proof from a file
+                    </p>
+                    <pre className="bg-black/40 rounded-lg p-4 overflow-x-auto">
+                      <code className="text-sm text-[#e5e7eb] font-mono leading-relaxed">
+                        {currentCode.stamp}
+                      </code>
+                    </pre>
+                  </div>
+
+                  <div className="space-y-2">
+                    <p className="text-xs font-semibold text-[#9ca3af] uppercase tracking-wide">
+                      Step 3 – Verify later by hash
+                    </p>
+                    <pre className="bg-black/40 rounded-lg p-4 overflow-x-auto">
+                      <code className="text-sm text-[#e5e7eb] font-mono leading-relaxed">
+                        {currentCode.verify}
+                      </code>
+                    </pre>
+                  </div>
+
+                  <div className="space-y-2">
+                    <p className="text-xs font-semibold text-[#9ca3af] uppercase tracking-wide">
+                      Optional – Verify directly from a file
+                    </p>
+                    <pre className="bg-black/40 rounded-lg p-4 overflow-x-auto">
+                      <code className="text-sm text-[#e5e7eb] font-mono leading-relaxed">
+                        {currentCode.verifyFile}
+                      </code>
+                    </pre>
+                  </div>
+                </div>
+              ) : (
+                <pre className="relative bg-[#020617] border border-[#1f2937] rounded-xl p-6 overflow-x-auto">
+                  <code className="text-sm text-[#e5e7eb] font-mono leading-relaxed">
+                    {currentCode.stamp}
+                  </code>
+                </pre>
+              )}
             </div>
           </div>
 
-          {/* Verify Example */}
-          {'verify' in codeExamples[language] && (
+          {/* Verify Example (cURL only – JS quick start already covers this) */}
+          {'verify' in currentCode && language === 'curl' && (
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-base font-semibold flex items-center gap-2">
@@ -245,7 +345,7 @@ export default function OrgSDK({ orgId }: OrgSDKProps) {
                   Verify a Proof
                 </h3>
                 <button
-                  onClick={() => copyToClipboard((codeExamples[language] as any).verify, 'verify')}
+                  onClick={() => copyToClipboard(currentCode.verify, 'verify')}
                   className="btn-secondary text-sm flex items-center gap-2 px-4 py-2"
                 >
                   {copiedCode === 'verify' ? (
@@ -264,14 +364,16 @@ export default function OrgSDK({ orgId }: OrgSDKProps) {
               <div className="relative group">
                 <div className="absolute -inset-1 bg-gradient-to-r from-[#0ea5e9] to-[#22c55e] rounded-xl opacity-20 blur group-hover:opacity-40 transition"></div>
                 <pre className="relative bg-[#020617] border border-[#1f2937] rounded-xl p-6 overflow-x-auto">
-                  <code className="text-sm text-[#e5e7eb] font-mono leading-relaxed">{(codeExamples[language] as any).verify}</code>
+                <code className="text-sm text-[#e5e7eb] font-mono leading-relaxed">
+                  {currentCode.verify}
+                </code>
                 </pre>
               </div>
             </div>
           )}
 
           {/* List Proofs (JS only) */}
-          {language === 'javascript' && 'listProofs' in codeExamples[language] && (
+          {language === 'javascript' && 'listProofs' in currentCode && (
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-base font-semibold flex items-center gap-2">
@@ -281,7 +383,7 @@ export default function OrgSDK({ orgId }: OrgSDKProps) {
                   List Proofs
                 </h3>
                 <button
-                  onClick={() => copyToClipboard((codeExamples[language] as any).listProofs, 'listProofs')}
+                  onClick={() => copyToClipboard(currentCode.listProofs, 'listProofs')}
                   className="btn-secondary text-sm flex items-center gap-2 px-4 py-2"
                 >
                   {copiedCode === 'listProofs' ? (
@@ -300,14 +402,16 @@ export default function OrgSDK({ orgId }: OrgSDKProps) {
               <div className="relative group">
                 <div className="absolute -inset-1 bg-gradient-to-r from-[#8b5cf6] to-[#22c55e] rounded-xl opacity-20 blur group-hover:opacity-40 transition"></div>
                 <pre className="relative bg-[#020617] border border-[#1f2937] rounded-xl p-6 overflow-x-auto">
-                  <code className="text-sm text-[#e5e7eb] font-mono leading-relaxed">{(codeExamples[language] as any).listProofs}</code>
+                  <code className="text-sm text-[#e5e7eb] font-mono leading-relaxed">
+                    {currentCode.listProofs}
+                  </code>
                 </pre>
               </div>
             </div>
           )}
 
           {/* List Proofs cURL */}
-          {language === 'curl' && 'listProofs' in codeExamples[language] && (
+          {language === 'curl' && 'listProofs' in currentCode && (
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-base font-semibold flex items-center gap-2">
@@ -317,7 +421,7 @@ export default function OrgSDK({ orgId }: OrgSDKProps) {
                   List Proofs
                 </h3>
                 <button
-                  onClick={() => copyToClipboard((codeExamples[language] as any).listProofs, 'listProofs')}
+                  onClick={() => copyToClipboard(currentCode.listProofs, 'listProofs')}
                   className="btn-secondary text-sm flex items-center gap-2 px-4 py-2"
                 >
                   {copiedCode === 'listProofs' ? (
@@ -336,7 +440,9 @@ export default function OrgSDK({ orgId }: OrgSDKProps) {
               <div className="relative group">
                 <div className="absolute -inset-1 bg-gradient-to-r from-[#8b5cf6] to-[#22c55e] rounded-xl opacity-20 blur group-hover:opacity-40 transition"></div>
                 <pre className="relative bg-[#020617] border border-[#1f2937] rounded-xl p-6 overflow-x-auto">
-                  <code className="text-sm text-[#e5e7eb] font-mono leading-relaxed">{(codeExamples[language] as any).listProofs}</code>
+                  <code className="text-sm text-[#e5e7eb] font-mono leading-relaxed">
+                    {currentCode.listProofs}
+                  </code>
                 </pre>
               </div>
             </div>
@@ -373,7 +479,7 @@ export default function OrgSDK({ orgId }: OrgSDKProps) {
                     <span className="px-2 py-1 bg-[#8b5cf6] text-white text-xs font-bold rounded">POST</span>
                     <code className="text-sm text-[#8b5cf6]">/api/public-verify</code>
                   </div>
-                  <p className="text-sm text-[#9ca3af]">Public verification endpoint (no auth required)</p>
+                  <p className="text-sm text-[#9ca3af]">Public verification endpoint (no auth required; supports optional live validators)</p>
                 </div>
 
                 <div className="p-4 bg-[#020617] rounded-lg border border-[#1f2937]">
@@ -399,19 +505,14 @@ export default function OrgSDK({ orgId }: OrgSDKProps) {
                 <div className="space-y-1">
                   <span className="text-xs text-[#6b7280] uppercase tracking-wider">Base URL</span>
                   <div className="code text-sm bg-[#020617] px-3 py-2 rounded-lg border border-[#1f2937]">
-                    https://your-api.proofmesh.com
+                    https://api.proofmesh.com
                   </div>
                 </div>
                 <div className="space-y-1">
                   <span className="text-xs text-[#6b7280] uppercase tracking-wider">Authentication</span>
-                  <div className="code text-sm bg-[#020617] px-3 py-2 rounded-lg border border-[#1f2937]">
-                    Bearer Token (API Key)
-                  </div>
-                </div>
-                <div className="space-y-1">
-                  <span className="text-xs text-[#6b7280] uppercase tracking-wider">Org Header</span>
-                  <div className="code text-sm bg-[#020617] px-3 py-2 rounded-lg border border-[#1f2937]">
-                    X-Org-ID: {orgId}
+                  <div className="code text-sm bg-[#020617] px-3 py-2 rounded-lg border border-[#1f2937] space-y-1">
+                    <div>x-api-key: your-org-api-key</div>
+                    <div className="text-xs text-[#6b7280]">Org is derived from the key; no extra header needed.</div>
                   </div>
                 </div>
                 <div className="space-y-1">

@@ -1,6 +1,6 @@
 /**
  * ProofMesh SDK for JavaScript/TypeScript
- * 
+ *
  * Official SDK for interacting with the ProofMesh API
  * @packageDocumentation
  */
@@ -12,7 +12,14 @@ export interface ProofMeshConfig {
 }
 
 export interface StampOptions {
-  file: File | Blob;
+  /**
+   * File or binary content to hash and stamp.
+   *
+   * - In browsers: pass a `File` or `Blob`.
+   * - In Node.js: pass a `Buffer` or `Uint8Array` (Buffer extends Uint8Array),
+   *   or an `ArrayBuffer`.
+   */
+  file: File | Blob | ArrayBuffer | Uint8Array;
   artifactType: string;
   artifactId: string;
 }
@@ -32,6 +39,17 @@ export interface StampResponse {
 
 export interface VerifyOptions {
   hash: string;
+  /**
+   * Verification mode:
+   * - 'db_only' (default) uses only the ProofMesh DB
+   * - 'db_plus_validators' also asks live validators when needed
+   */
+  mode?: 'db_only' | 'db_plus_validators';
+}
+
+export interface VerifyFileOptions {
+  file: File | Blob | ArrayBuffer | Uint8Array;
+  mode?: 'db_only' | 'db_plus_validators';
 }
 
 export interface VerifyResponse {
@@ -70,6 +88,7 @@ export class ProofMeshError extends Error {
   constructor(
     message: string,
     public statusCode?: number,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     public details?: any
   ) {
     super(message);
@@ -92,7 +111,100 @@ export class ProofMesh {
 
     this.apiKey = config.apiKey;
     this.orgId = config.orgId;
-    this.baseUrl = config.baseUrl || 'https://your-api.proofmesh.com';
+    // Default to the public API entrypoint; override for self-hosted / dev.
+    this.baseUrl = config.baseUrl || 'https://api.proofmesh.com';
+  }
+
+  /**
+   * Create a ProofMesh client from environment variables.
+   *
+   * Reads:
+   * - PROOFMESH_API_KEY
+   * - PROOFMESH_ORG_ID
+   * - PROOFMESH_BASE_URL (optional)
+   *
+   * Intended for server-side / Node.js environments.
+   */
+  static fromEnv(): ProofMesh {
+    // Use a minimal, local type for process to avoid requiring @types/node.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const globalProcess: any = (globalThis as any).process;
+    const proc = globalProcess as { env?: Record<string, string | undefined> } | undefined;
+
+    if (!proc || !proc.env) {
+      throw new ProofMeshError(
+        'ProofMesh.fromEnv() is only supported in environments with process.env (e.g. Node.js).'
+      );
+    }
+
+    const apiKey = proc.env.PROOFMESH_API_KEY;
+    const orgId = proc.env.PROOFMESH_ORG_ID;
+    const baseUrl = proc.env.PROOFMESH_BASE_URL;
+
+    if (!apiKey) {
+      throw new ProofMeshError(
+        'PROOFMESH_API_KEY is required in environment for ProofMesh.fromEnv()'
+      );
+    }
+    if (!orgId) {
+      throw new ProofMeshError(
+        'PROOFMESH_ORG_ID is required in environment for ProofMesh.fromEnv()'
+      );
+    }
+
+    return new ProofMesh({
+      apiKey,
+      orgId,
+      baseUrl: baseUrl || undefined,
+    });
+  }
+
+  /**
+   * Helper to normalise file/binary inputs into an ArrayBuffer-like object.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async toArrayBuffer(input: File | Blob | ArrayBuffer | Uint8Array): Promise<any> {
+    if (input instanceof Blob) {
+      return await input.arrayBuffer();
+    }
+    // Handle ArrayBuffer (and compatible views) via duck-typing on constructor name.
+    // We cast through `unknown` to avoid the TS union complaint while keeping runtime safety.
+    if (
+      typeof input === 'object' &&
+      input !== null &&
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (input as any).constructor &&
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ((input as any).constructor.name === 'ArrayBuffer' ||
+        (input as any).constructor.name === 'SharedArrayBuffer')
+    ) {
+      return input as unknown as ArrayBuffer;
+    }
+    if (input instanceof Uint8Array) {
+      // Respect the view's offset/length
+      return input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength);
+    }
+    // Fallback – in environments without Blob/File, caller should not pass those types.
+    throw new ProofMeshError('Unsupported file type for hashing');
+  }
+
+  /**
+   * Compute a SHA-256 hash string (`SHA256:<hex>`) from file/binary input.
+   */
+  private async computeHash(input: File | Blob | ArrayBuffer | Uint8Array): Promise<string> {
+    const arrayBuffer = (await this.toArrayBuffer(input)) as ArrayBuffer;
+
+    if (!globalThis.crypto?.subtle) {
+      throw new ProofMeshError(
+        'Web Crypto API (crypto.subtle) is not available in this environment. ' +
+          'Use Node.js 20+ or a modern browser, or pre-compute the hash yourself.'
+      );
+    }
+
+    const hashBuffer = await globalThis.crypto.subtle.digest('SHA-256', arrayBuffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    const hashHex = hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+    return `SHA256:${hashHex}`;
   }
 
   /**
@@ -101,13 +213,8 @@ export class ProofMesh {
    * @returns Promise with proof details
    */
   async stamp(options: StampOptions): Promise<StampResponse> {
-    // Compute hash from file
-    const fileToHash = options.file instanceof File ? options.file : new File([options.file], 'file');
-    const arrayBuffer = await fileToHash.arrayBuffer();
-    const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-    const hash = `SHA256:${hashHex}`;
+    // Compute hash from file/binary content.
+    const hash = await this.computeHash(options.file);
 
     const response = await fetch(`${this.baseUrl}/api/stamp`, {
       method: 'POST',
@@ -150,6 +257,7 @@ export class ProofMesh {
       body: JSON.stringify({
         hash: options.hash,
         orgId: this.orgId,
+        mode: options.mode ?? 'db_only',
       }),
     });
 
@@ -164,6 +272,23 @@ export class ProofMesh {
       );
     }
 
+    return this.mapVerifyResponse(raw);
+  }
+
+  /**
+   * Verify a proof directly from a file/binary input.
+   * This computes the hash client-side and then calls `verify`.
+   */
+  async verifyFile(options: VerifyFileOptions): Promise<VerifyResponse> {
+    const hash = await this.computeHash(options.file);
+    return this.verify({ hash, mode: options.mode });
+  }
+
+  /**
+   * Internal helper to normalise various verify response shapes into VerifyResponse.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private mapVerifyResponse(raw: any): VerifyResponse {
     // Support both legacy VerifyResponse ({ isValid, validatorCount, proof })
     // and the newer /api/verify response ({ status, validators_confirmed, proofs }).
     if ('isValid' in raw) {
@@ -216,13 +341,20 @@ export class ProofMesh {
    * @param hash - The proof hash to verify
    * @returns Promise with verification result
    */
-  async publicVerify(hash: string): Promise<VerifyResponse> {
-    const response = await fetch(`${this.baseUrl}/api/public-verify`, {
+  async publicVerify(
+    hash: string,
+    mode: 'db_only' | 'db_plus_validators' = 'db_only'
+  ): Promise<VerifyResponse> {
+    const response = await fetch(`${this.baseUrl}/api/verify`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ hash }),
+      body: JSON.stringify({
+        orgId: this.orgId,
+        hash,
+        mode,
+      }),
     });
 
     if (!response.ok) {
@@ -234,7 +366,11 @@ export class ProofMesh {
       );
     }
 
-    return response.json();
+    const raw = await response.json().catch(() => null);
+    if (!raw) {
+      throw new ProofMeshError('Empty response from verify endpoint', response.status);
+    }
+    return this.mapVerifyResponse(raw);
   }
 
   /**
@@ -301,26 +437,27 @@ export class ProofMesh {
   async getProofChain(proofId: string): Promise<NonNullable<VerifyResponse['proofs']>> {
     const chain: NonNullable<VerifyResponse['proofs']> = [];
     const seen = new Set<string>();
-    
+
     const fetchRecursive = async (id: string) => {
       if (seen.has(id)) return;
       seen.add(id);
-      
+
       try {
         const proof = await this.getProof(id);
         if (proof) {
           chain.push(proof);
-          
+
           // Fetch parent if it exists
           if (proof.versionOf) {
             await fetchRecursive(proof.versionOf);
           }
         }
       } catch (error) {
+        // eslint-disable-next-line no-console
         console.warn(`Failed to fetch proof ${id}:`, error);
       }
     };
-    
+
     await fetchRecursive(proofId);
     return chain;
   }
@@ -328,3 +465,5 @@ export class ProofMesh {
 
 // Default export
 export default ProofMesh;
+
+
